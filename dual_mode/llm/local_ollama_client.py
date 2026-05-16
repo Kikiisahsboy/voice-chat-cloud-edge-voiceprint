@@ -79,6 +79,55 @@ class LocalOllamaClient:
                 self.messages.pop()
             raise
 
+    def generate_stream(self, user_text: str) -> Generator[str, None, None]:
+        """流式生成，逐句 yield 回复内容。"""
+        self.messages.append({"role": "user", "content": user_text})
+
+        payload = {
+            "model": self.model,
+            "messages": self.messages,
+            "options": {"temperature": self.temperature, "num_predict": self.num_predict},
+            "stream": True,
+        }
+
+        full = ""
+        try:
+            resp = requests.post(
+                f"{self.base_url}/api/chat", json=payload, timeout=self.timeout, stream=True)
+            resp.raise_for_status()
+            buf = ""
+            for line in resp.iter_lines(decode_unicode=True):
+                if not line or not line.startswith("data: "):
+                    continue
+                data_str = line[6:]
+                if data_str == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data_str)
+                    token = chunk.get("message", {}).get("content", "")
+                    if token:
+                        buf += token
+                        full += token
+                        # 遇到句子分隔符就 yield
+                        for sep in ("。", "！", "？", "，", "；", "\n", ".", "!", "?"):
+                            idx = buf.find(sep)
+                            if idx >= 0:
+                                sentence = buf[:idx + len(sep)]
+                                buf = buf[idx + len(sep):]
+                                yield sentence.strip()
+                                break
+                except (json.JSONDecodeError, KeyError):
+                    continue
+            if buf.strip():
+                yield buf.strip()
+        except Exception as e:
+            logger.error("Ollama 流式请求失败: %s", e)
+            if self.messages and self.messages[-1]['role'] == 'user':
+                self.messages.pop()
+            raise
+
+        self.messages.append({"role": "assistant", "content": full})
+
     def reset_session(self):
         if self.messages and self.messages[0]['role'] == 'system':
             self.messages = [self.messages[0]]

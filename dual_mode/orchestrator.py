@@ -266,11 +266,10 @@ class DualModeOrchestrator:
         for i in range(num):
             input(f"[{i+1}/{num}] 按 Enter 开始录音...")
 
-            # 录制一段时间的音频
+            # 录制一段时间的音频（不需要连接 ASR）
             frames = []
             with self.audio_capture as cap:
                 cap.calibrate_noise(duration=0.5)
-                cap.connect_asr()  # 虽然不用ASR，但需要初始化流
                 cap._start_stream()
                 print("   录音中... 说一句话")
                 timeout = self.cfg.conversation.listen_timeout_seconds

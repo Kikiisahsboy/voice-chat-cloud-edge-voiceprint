@@ -49,12 +49,16 @@ class SpeechBrainEngine:
         logger.info("SpeechBrain 模型加载完毕")
 
     def extract_embedding(self, audio: np.ndarray, sample_rate: int = 16000) -> np.ndarray:
+        import torch
+
         if audio.dtype != np.float32:
             audio = audio.astype(np.float32)
         if audio.ndim == 1:
             audio = np.expand_dims(audio, axis=0)
 
-        embedding = self._model.encode_batch(audio)
+        # SpeechBrain 需要 PyTorch tensor
+        tensor = torch.from_numpy(audio).to(self._model.device)
+        embedding = self._model.encode_batch(tensor)
         emb = embedding.squeeze().detach().cpu().numpy()
 
         norm = np.linalg.norm(emb)

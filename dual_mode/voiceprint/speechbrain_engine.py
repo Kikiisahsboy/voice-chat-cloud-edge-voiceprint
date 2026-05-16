@@ -22,27 +22,37 @@ class SpeechBrainEngine:
     """Speaker embedding extractor using SpeechBrain ECAPA-TDNN."""
 
     @staticmethod
-    def _patch_torch_amp():
+    def _patch_speechbrain():
         """修复 torch 2.3+ 与 speechbrain 1.1.0 的 amp API 不兼容。"""
         import torch
-        # speechbrain 调用 torch.amp.custom_fwd(device_type=...) 但 torch 2.3+
-        # 的 custom_fwd 签名不同。映射到正确的 API。
-        if hasattr(torch, 'amp') and not hasattr(torch.amp, 'custom_fwd'):
-            # torch 2.4+ 移除了 custom_fwd，用 autocast 模式替代
-            try:
-                # 尝试用 torch.cuda.amp.custom_fwd 作为替代
-                torch.amp.custom_fwd = torch.cuda.amp.custom_fwd
-                torch.amp.custom_bwd = torch.cuda.amp.custom_bwd
-            except Exception:
-                pass
+        from torch.cuda.amp import custom_fwd as _cuda_custom_fwd
+        from torch.cuda.amp import custom_bwd as _cuda_custom_bwd
+
+        # torch 2.3 的 custom_fwd 签名变成 (fwd=None, *, cast_inputs=None)
+        # 不再接受 device_type 参数。需要包装以兼容 speechbrain。
+        def _wrapped_custom_fwd(fwd=None, *, device_type=None, **kwargs):
+            # 忽略 device_type，speechbrain 传但我们不认
+            if fwd is None:
+                return lambda f: _wrapped_custom_fwd(f, device_type=device_type, **kwargs)
+            return _cuda_custom_fwd(fwd, **kwargs)
+
+        def _wrapped_custom_bwd(bwd=None, *, device_type=None, **kwargs):
+            if bwd is None:
+                return lambda f: _wrapped_custom_bwd(f, device_type=device_type, **kwargs)
+            return _cuda_custom_bwd(bwd, **kwargs)
+
+        torch.amp.custom_fwd = _wrapped_custom_fwd
+        torch.amp.custom_bwd = _wrapped_custom_bwd
+        logger.debug("SpeechBrain autocast 补丁已应用")
 
     def __init__(self, model_id: str = "speechbrain/spkrec-ecapa-voxceleb"):
         try:
-            # 修复 torch 2.3+ 与 speechbrain 1.1.0 的兼容问题
-            self._patch_torch_amp()
             from speechbrain.inference.speaker import EncoderClassifier
         except ImportError:
             raise ImportError("需要 speechbrain: pip install speechbrain")
+
+        # 修复 torch 2.3+ 兼容性（必须在加载模型之前）
+        self._patch_speechbrain()
 
         logger.info("加载 SpeechBrain 模型: %s ...", model_id)
 

@@ -1,0 +1,69 @@
+# =============================================================================
+# Dual-Mode Voice Assistant Configuration
+# =============================================================================
+
+# ----- Cloud Services -----
+servers:
+  cloud:
+    asr:
+      host: "100.125.0.54"
+      port: 12306
+    tts:
+      host: "100.125.0.54"
+      port: 11451           # Combined LLM+TTS server
+    ollama:
+      base_url: "http://100.125.0.54:11434"
+
+  local:
+    ollama:
+      base_url: "http://localhost:11434"
+
+# ----- LLM Dual-Mode Settings -----
+llm:
+  strategy: "cloud_first"     # cloud_first | local_only | cloud_only
+  cloud:
+    model: "xinyu_teacher_nothink"
+    tts_timeout_seconds: 10.0
+    max_retries: 1
+  local:
+    model: "qwen2:1.5b"
+    timeout_seconds: 60.0
+    temperature: 0.7
+    num_predict: 512
+
+# ----- Voiceprint Recognition -----
+voiceprint:
+  enabled: true
+  # Path to WeSpeaker model (local path or ModelScope model ID)
+  model_path: "models/wespeaker/voxceleb_ECAPA512_LM"
+  embedding_dim: 512
+  identification_threshold: 0.65
+  min_audio_duration_seconds: 0.8
+  enrollment_dir: "dual_mode/enrolled_speakers/"
+
+# ----- Wake Word Detection -----
+wake_word:
+  model_path: "client/xixiaodian.pmdl"
+  sensitivity: 0.5
+  resource_path: "client/resources/common.res"
+
+# ----- Audio Settings -----
+audio:
+  asr_sample_rate: 16000
+  tts_sample_rate: 24000
+  channels: 1
+  frames_per_buffer: 4096
+
+# ----- Conversation -----
+conversation:
+  timeout_seconds: 5.0
+  exit_phrases:
+    - "退出"
+    - "再见"
+    - "exit"
+    - "quit"
+
+# ----- Sound Effects -----
+sounds:
+  ding: "client/resources/ding.wav"
+  dong: "client/resources/dong.wav"

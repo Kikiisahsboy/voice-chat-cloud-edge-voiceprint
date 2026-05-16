@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Voiceprint templates (user data)
+enrolled_speakers/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db

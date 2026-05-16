@@ -1,5 +1,5 @@
 # =============================================================================
-# Dual-Mode Voice Assistant Configuration
+# Dual-Mode Voice Assistant Configuration (Windows Compatible)
 # =============================================================================
 
 # ----- Cloud Services -----
@@ -11,59 +11,64 @@ servers:
     tts:
       host: "100.125.0.54"
       port: 11451           # Combined LLM+TTS server
-    ollama:
-      base_url: "http://100.125.0.54:11434"
 
   local:
     ollama:
       base_url: "http://localhost:11434"
 
-# ----- LLM Dual-Mode Settings -----
+# ----- LLM Dual-Mode -----
 llm:
-  strategy: "cloud_first"     # cloud_first | local_only | cloud_only
+  strategy: "cloud_first"
   cloud:
     model: "xinyu_teacher_nothink"
     tts_timeout_seconds: 10.0
-    max_retries: 1
   local:
     model: "qwen2:1.5b"
     timeout_seconds: 60.0
     temperature: 0.7
     num_predict: 512
 
-# ----- Voiceprint Recognition -----
+# ----- Wake Word (openwakeword) -----
+wake_word:
+  enabled: true
+  # Pre-trained model name from openwakeword:
+  # "alexa", "hey_mycroft", "hey_jarvis", "ok_nabu", etc.
+  model: "alexa"
+  # Sensitivity threshold (0-1), lower = more sensitive
+  threshold: 0.5
+
+# ----- Voiceprint (SpeechBrain) -----
 voiceprint:
   enabled: true
-  # Path to WeSpeaker model (local path or ModelScope model ID)
-  model_path: "models/wespeaker/voxceleb_ECAPA512_LM"
-  embedding_dim: 512
-  identification_threshold: 0.65
+  model: "speechbrain/spkrec-ecapa-voxceleb"
+  embedding_dim: 192
+  identification_threshold: 0.55
   min_audio_duration_seconds: 0.8
   enrollment_dir: "dual_mode/enrolled_speakers/"
 
-# ----- Wake Word Detection -----
-wake_word:
-  model_path: "client/xixiaodian.pmdl"
-  sensitivity: 0.5
-  resource_path: "client/resources/common.res"
-
-# ----- Audio Settings -----
+# ----- Audio -----
 audio:
-  asr_sample_rate: 16000
+  sample_rate: 16000
   tts_sample_rate: 24000
   channels: 1
-  frames_per_buffer: 4096
+  frames_per_buffer: 2048
+  # VAD settings
+  vad_aggressiveness: 3       # 0-3, 3 = most aggressive
+  vad_frame_ms: 30            # 10, 20, or 30
+  silence_timeout_seconds: 1.5
+  speech_start_threshold: 0.5
+  speech_end_threshold: 0.3
 
 # ----- Conversation -----
 conversation:
-  timeout_seconds: 5.0
+  listen_timeout_seconds: 10.0
   exit_phrases:
     - "退出"
     - "再见"
     - "exit"
     - "quit"
 
-# ----- Sound Effects -----
+# ----- Sounds -----
 sounds:
   ding: "client/resources/ding.wav"
   dong: "client/resources/dong.wav"

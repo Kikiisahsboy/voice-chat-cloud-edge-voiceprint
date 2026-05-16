@@ -2,6 +2,9 @@
 __pycache__/
 *.py[cod]
 
+# Downloaded models (runtime)
+pretrained_models/
+
 # Voiceprint templates (user data)
 enrolled_speakers/
 

@@ -1,9 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Local TTS client using Microsoft Edge TTS (edge-tts).
-
-Provides speech synthesis when cloud TTS is unavailable.
-Uses the free Microsoft Edge TTS API with Chinese neural voices.
+本地 TTS（edge-tts），云端不可用时的兜底方案。
+使用 Microsoft Edge 免费 TTS API，中文质量好。
 """
 
 import asyncio
@@ -11,52 +9,47 @@ import io
 import logging
 import tempfile
 import threading
-from typing import Optional
-
-import pyaudio
 
 logger = logging.getLogger(__name__)
 
+try:
+    import edge_tts
+    _edge_tts_ok = True
+except ImportError:
+    edge_tts = None
+    _edge_tts_ok = False
+
+try:
+    import pyaudio
+    _pyaudio_ok = True
+except ImportError:
+    pyaudio = None
+    _pyaudio_ok = False
+
 
 class LocalTTSClient:
-    """Edge-TTS based local speech synthesis."""
-
-    # Good Chinese voices from edge-tts
     DEFAULT_VOICE = "zh-CN-XiaoxiaoNeural"
 
-    def __init__(
-        self,
-        voice: str = DEFAULT_VOICE,
-        sample_rate: int = 24000,
-        buffer_size: int = 4096,
-    ):
+    def __init__(self, voice: str = DEFAULT_VOICE, sample_rate: int = 24000):
+        if not _edge_tts_ok:
+            raise ImportError("需要 edge_tts: pip install edge-tts")
+        if not _pyaudio_ok:
+            raise ImportError("需要 pyaudio: pip install pyaudio")
+
         self.voice = voice
         self.sample_rate = sample_rate
-        self.buffer_size = buffer_size
         self._pyaudio: Optional[pyaudio.PyAudio] = None
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._loop_thread: Optional[threading.Thread] = None
-        self._start_event_loop()
 
-    def _start_event_loop(self):
-        """Start a background asyncio event loop for edge-tts calls."""
+        # Background event loop for async edge-tts
         self._loop = asyncio.new_event_loop()
-        self._loop_thread = threading.Thread(
-            target=self._run_loop, daemon=True)
+        self._loop_thread = threading.Thread(target=self._run_loop, daemon=True)
         self._loop_thread.start()
 
     def _run_loop(self):
         asyncio.set_event_loop(self._loop)
         self._loop.run_forever()
 
-    def _ensure_pyaudio(self):
-        if self._pyaudio is None:
-            self._pyaudio = pyaudio.PyAudio()
-
     async def _synthesize(self, text: str) -> bytes:
-        """Async: synthesize text to MP3 bytes using edge-tts."""
-        import edge_tts
-
         communicate = edge_tts.Communicate(text, self.voice)
         chunks = []
         async for chunk in communicate.stream():
@@ -65,101 +58,49 @@ class LocalTTSClient:
         return b"".join(chunks)
 
     def _mp3_to_pcm(self, mp3_data: bytes) -> bytes:
-        """Convert MP3 bytes to PCM int16 bytes at target sample rate."""
         try:
             from pydub import AudioSegment
         except ImportError:
-            raise ImportError(
-                "pydub is required for audio format conversion. "
-                "Install with: pip install pydub"
-            )
+            raise ImportError("需要 pydub: pip install pydub")
 
         seg = AudioSegment.from_file(io.BytesIO(mp3_data), format="mp3")
-        seg = seg.set_frame_rate(self.sample_rate).set_channels(
-            1).set_sample_width(2)
+        seg = seg.set_frame_rate(self.sample_rate).set_channels(1).set_sample_width(2)
         return seg.raw_data
 
     def speak(self, text: str) -> None:
-        """
-        Synthesize text and play audio via PyAudio.
-        Blocks until playback completes.
-        """
+        """合成并播放语音。"""
         if not text.strip():
             return
 
-        logger.info("Local TTS synthesizing: %s", text[:50])
+        logger.info("本地 TTS 合成: %s", text[:50])
 
+        future = asyncio.run_coroutine_threadsafe(self._synthesize(text), self._loop)
         try:
-            future = asyncio.run_coroutine_threadsafe(
-                self._synthesize(text), self._loop)
             mp3_data = future.result(timeout=30)
         except Exception as e:
-            logger.error("Local TTS synthesis failed: %s", e)
+            logger.error("TTS 合成失败: %s", e)
             raise
 
-        try:
-            pcm_data = self._mp3_to_pcm(mp3_data)
-        except ImportError as e:
-            logger.warning("pydub not available, playing MP3 directly: %s", e)
-            # Fallback: save to temp file and play with a system player
-            self._play_mp3_fallback(mp3_data)
-            return
+        pcm = self._mp3_to_pcm(mp3_data)
 
-        self._ensure_pyaudio()
+        if self._pyaudio is None:
+            self._pyaudio = pyaudio.PyAudio()
+
         stream = self._pyaudio.open(
             format=pyaudio.paInt16,
             channels=1,
             rate=self.sample_rate,
             output=True,
-            frames_per_buffer=self.buffer_size,
+            frames_per_buffer=4096,
         )
 
-        chunk_size = self.buffer_size * 2  # 2 bytes per sample for int16
-        offset = 0
-        while offset < len(pcm_data):
-            chunk = pcm_data[offset:offset + chunk_size]
-            stream.write(chunk)
-            offset += chunk_size
+        chunk = 4096 * 2
+        for i in range(0, len(pcm), chunk):
+            stream.write(pcm[i:i + chunk])
 
         stream.stop_stream()
         stream.close()
-        logger.info("Local TTS playback complete.")
-
-    def _play_mp3_fallback(self, mp3_data: bytes):
-        """Fallback: save MP3 to temp file and play with pyaudio."""
-        self._ensure_pyaudio()
-        tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
-        try:
-            tmp.write(mp3_data)
-            tmp.close()
-
-            try:
-                from pydub import AudioSegment
-                seg = AudioSegment.from_file(tmp.name, format="mp3")
-                seg = seg.set_frame_rate(self.sample_rate).set_channels(
-                    1).set_sample_width(2)
-                pcm = seg.raw_data
-            except ImportError:
-                logger.error("pydub not available for fallback playback")
-                return
-
-            stream = self._pyaudio.open(
-                format=pyaudio.paInt16,
-                channels=1,
-                rate=self.sample_rate,
-                output=True,
-                frames_per_buffer=self.buffer_size,
-            )
-            chunk_size = self.buffer_size * 2
-            offset = 0
-            while offset < len(pcm):
-                stream.write(pcm[offset:offset + chunk_size])
-                offset += chunk_size
-            stream.stop_stream()
-            stream.close()
-        finally:
-            import os
-            os.unlink(tmp.name)
+        logger.info("本地 TTS 播放完毕")
 
     def close(self):
         if self._loop:

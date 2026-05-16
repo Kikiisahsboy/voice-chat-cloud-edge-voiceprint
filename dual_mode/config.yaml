@@ -30,14 +30,14 @@ llm:
     model: "xinyu_teacher_nothink"
     tts_timeout_seconds: 10.0
   local:
-    model: "qwen2:1.5b"
+    model: "qwen2.5:1.5b"
     timeout_seconds: 60.0
     temperature: 0.7
     num_predict: 512
 
 # ----- Wake Word (openwakeword) -----
 wake_word:
-  enabled: true
+  enabled: false
   # Pre-trained model name from openwakeword:
   # "alexa", "hey_mycroft", "hey_jarvis", "ok_nabu", etc.
   model: "alexa"

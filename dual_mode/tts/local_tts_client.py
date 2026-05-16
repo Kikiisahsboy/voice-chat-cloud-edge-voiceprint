@@ -1,39 +1,41 @@
 # -*- coding: utf-8 -*-
-"""本地 TTS 客户端（edge-tts），无需 ffmpeg。"""
+"""本地流式 TTS 客户端 — edge-tts 流式合成 + miniaudio 解码 + PyAudio 播放。"""
 
 import asyncio
-import io
 import logging
-import os
-import tempfile
+import queue
 import threading
-import wave
 from typing import Optional
-
-try:
-    import pyaudio
-    _pyaudio_available = True
-except ImportError:
-    pyaudio = None
-    _pyaudio_available = False
-
-import edge_tts
 
 logger = logging.getLogger(__name__)
 
+try:
+    import pyaudio
+    _pyaudio_ok = True
+except ImportError:
+    pyaudio = None
+    _pyaudio_ok = False
 
-class LocalTTSClient:
-    """使用 Microsoft Edge TTS，输出 PCM 通过 PyAudio 播放。"""
+import edge_tts
+import miniaudio
+
+
+class StreamingLocalTTS:
+    """流式 TTS：边合成边播放，支持随时打断。"""
 
     VOICE = "zh-CN-XiaoxiaoNeural"
+    STREAM_CHUNK = 1024  # MP3 解码后的 PCM 帧大小
 
     def __init__(self, sample_rate: int = 24000):
-        if not _pyaudio_available:
+        if not _pyaudio_ok:
             raise ImportError("需要 pyaudio: pip install pyaudio")
 
         self.sample_rate = sample_rate
         self._pyaudio: Optional[pyaudio.PyAudio] = None
+        self._stop_event = threading.Event()
+        self._playing = False
 
+        # Async event loop
         self._loop = asyncio.new_event_loop()
         self._loop_thread = threading.Thread(target=self._run_loop, daemon=True)
         self._loop_thread.start()
@@ -42,53 +44,52 @@ class LocalTTSClient:
         asyncio.set_event_loop(self._loop)
         self._loop.run_forever()
 
-    async def _synthesize(self, text: str) -> bytes:
+    async def _stream_tts(self, text: str, pcm_queue: queue.Queue):
+        """异步流式获取 edge-tts 音频块，解码后放入队列。"""
         communicate = edge_tts.Communicate(text, self.VOICE)
-        chunks = []
+        mp3_buffer = bytearray()
+
         async for chunk in communicate.stream():
+            if self._stop_event.is_set():
+                break
             if chunk["type"] == "audio":
-                chunks.append(chunk["data"])
-        return b"".join(chunks)
+                mp3_buffer.extend(chunk["data"])
+                # 每积累一定量就解码
+                if len(mp3_buffer) >= 4096:
+                    pcm = self._decode_mp3(bytes(mp3_buffer))
+                    if pcm:
+                        pcm_queue.put(pcm)
+                    mp3_buffer.clear()
 
-    def _mp3_to_pcm(self, mp3_data: bytes) -> bytes:
-        """将 MP3 解码为 PCM 16-bit mono，使用 pydub + ffmpeg。"""
+        # 解析剩余
+        if mp3_buffer and not self._stop_event.is_set():
+            pcm = self._decode_mp3(bytes(mp3_buffer))
+            if pcm:
+                pcm_queue.put(pcm)
+
+        pcm_queue.put(None)  # 结束标记
+
+    def _decode_mp3(self, data: bytes) -> Optional[bytes]:
+        """用 miniaudio 解码 MP3 为 int16 PCM。"""
         try:
-            from pydub import AudioSegment
-        except ImportError:
-            raise ImportError("需要 pydub + ffmpeg: pip install pydub 并安装 ffmpeg")
-
-        seg = AudioSegment.from_file(io.BytesIO(mp3_data), format="mp3")
-        seg = seg.set_frame_rate(self.sample_rate).set_channels(1).set_sample_width(2)
-        return seg.raw_data
-
-    def _save_and_play_mp3(self, mp3_data: bytes):
-        """备选方案：保存 MP3 到临时文件，用 PyAudio 播放 WAV。"""
-        # 尝试用 pydub（需要 ffmpeg）
-        try:
-            pcm = self._mp3_to_pcm(mp3_data)
-            self._play_pcm(pcm)
-            return
-        except ImportError:
-            logger.debug("pydub/ffmpeg 不可用，尝试 soundfile...")
+            decoded = miniaudio.decode(data, output_format=miniaudio.SampleFormat.SIGNED16,
+                                        nchannels=1, sample_rate=self.sample_rate)
+            return decoded.samples.tobytes()
         except Exception as e:
-            logger.debug("pydub 解码失败: %s", e)
+            logger.debug("MP3 解码失败: %s", e)
+            return None
 
-        # 备选：保存为临时 MP3，用 wave 模块播放（需要先转 WAV）
-        # 或者直接用 os.startfile 让系统默认播放器播放
-        try:
-            tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
-            tmp.write(mp3_data)
-            tmp.close()
-            os.startfile(tmp.name)
-            # 等播放完
-            import time
-            est = max(2.0, len(mp3_data) / 2000)  # rough estimate
-            time.sleep(est)
-            os.unlink(tmp.name)
-        except Exception as e:
-            logger.error("所有播放方式均失败: %s", e)
+    def speak(self, text: str) -> bool:
+        """
+        流式合成并播放。返回 True 表示正常完成，False 表示被打断。
+        """
+        if not text.strip():
+            return True
 
-    def _play_pcm(self, pcm: bytes):
+        logger.info("本地 TTS 流式合成: %s", text[:50])
+        self._stop_event.clear()
+        self._playing = True
+
         if self._pyaudio is None:
             self._pyaudio = pyaudio.PyAudio()
 
@@ -97,33 +98,53 @@ class LocalTTSClient:
             channels=1,
             rate=self.sample_rate,
             output=True,
-            frames_per_buffer=4096,
+            frames_per_buffer=self.STREAM_CHUNK,
         )
 
-        chunk = 4096 * 2
-        for i in range(0, len(pcm), chunk):
-            stream.write(pcm[i:i + chunk])
+        pcm_queue: queue.Queue = queue.Queue()
 
-        stream.stop_stream()
-        stream.close()
-        logger.info("本地 TTS 播放完毕")
+        # 启动异步合成
+        future = asyncio.run_coroutine_threadsafe(
+            self._stream_tts(text, pcm_queue), self._loop)
 
-    def speak(self, text: str):
-        if not text.strip():
-            return
+        first_chunk = True
+        interrupted = False
 
-        logger.info("本地 TTS 合成: %s", text[:50])
-
-        future = asyncio.run_coroutine_threadsafe(self._synthesize(text), self._loop)
         try:
-            mp3_data = future.result(timeout=30)
-        except Exception as e:
-            logger.error("TTS 合成失败: %s", e)
-            raise
+            while True:
+                if self._stop_event.is_set():
+                    interrupted = True
+                    break
+                try:
+                    pcm = pcm_queue.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                if pcm is None:  # 结束
+                    break
+                if first_chunk:
+                    logger.info("TTS 开始播放")
+                    first_chunk = False
+                stream.write(pcm)
+        finally:
+            stream.stop_stream()
+            stream.close()
+            future.cancel()
+            self._playing = False
 
-        self._save_and_play_mp3(mp3_data)
+        if interrupted:
+            logger.info("TTS 被用户打断")
+            return False
+        logger.info("TTS 播放完毕")
+        return True
+
+    def stop(self):
+        """打断当前播放。"""
+        if self._playing:
+            self._stop_event.set()
+            logger.info("TTS 打断信号已发送")
 
     def close(self):
+        self.stop()
         if self._loop:
             self._loop.call_soon_threadsafe(self._loop.stop)
         if self._loop_thread and self._loop_thread.is_alive():

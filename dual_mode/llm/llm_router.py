@@ -25,7 +25,7 @@ except ImportError:
 
 
 class CloudTTSClient:
-    """云端 TTS TCP 客户端（LLM+TTS 一体服务）。"""
+    """云端 TTS TCP 客户端（LLM+CosyVoice2 一体服务，流式播放）。"""
 
     def __init__(self, host: str, port: int, sample_rate: int = 24000):
         if not _pyaudio_ok:
@@ -36,6 +36,8 @@ class CloudTTSClient:
         self._sock: Optional[socket.socket] = None
         self._pyaudio: Optional[pyaudio.PyAudio] = None
         self._tts_timeout = 10.0
+        self._stop_flag = False
+        self._playing = False
 
     def connect(self) -> bool:
         try:
@@ -50,55 +52,84 @@ class CloudTTSClient:
             self._sock = None
             return False
 
-    def send_text_and_play(self, text: str) -> None:
-        """发送文本到云端 TTS 并实时播放返回的音频。"""
+    def stop(self):
+        """打断当前播放。"""
+        self._stop_flag = True
+
+    def send_text_and_play(self, text: str) -> bool:
+        """流式播放云端 TTS 音频。返回 True=完成，False=被打断。"""
         if not self._sock:
             raise ConnectionError("未连接云端 TTS")
 
         if self._pyaudio is None:
             self._pyaudio = pyaudio.PyAudio()
 
+        self._stop_flag = False
+        self._playing = True
         self._sock.sendall(f"{text}|".encode('utf-8'))
 
         stream: Optional[pyaudio.Stream] = None
+        interrupted = False
 
-        while True:
-            header = self._sock.recv(4)
-            if not header:
-                break
+        try:
+            while True:
+                if self._stop_flag:
+                    interrupted = True
+                    break
 
-            len_bytes = self._sock.recv(4)
-            if not len_bytes:
-                break
-            payload_len = struct.unpack('>I', len_bytes)[0]
+                self._sock.settimeout(0.1)
+                try:
+                    header = self._sock.recv(4)
+                except socket.timeout:
+                    continue
+                if not header:
+                    break
 
-            payload = b''
-            while len(payload) < payload_len:
-                chunk = self._sock.recv(payload_len - len(payload))
-                if not chunk:
-                    raise ConnectionError("TTS 连接断开")
-                payload += chunk
+                len_bytes = self._sock.recv(4)
+                if not len_bytes:
+                    break
+                payload_len = struct.unpack('>I', len_bytes)[0]
 
-            if header == b'TEXT':
-                print(payload.decode('utf-8'), end="", flush=True)
-            elif header == b'AUDO':
-                if stream is None:
-                    stream = self._pyaudio.open(
-                        format=pyaudio.paFloat32,
-                        channels=1,
-                        rate=self.sample_rate,
-                        output=True,
-                        frames_per_buffer=4096,
-                    )
-                stream.write(payload)
-            elif header == b'EOT ':
-                print()
-                break
+                payload = b''
+                while len(payload) < payload_len:
+                    if self._stop_flag:
+                        interrupted = True
+                        break
+                    try:
+                        self._sock.settimeout(0.5)
+                        chunk = self._sock.recv(payload_len - len(payload))
+                    except socket.timeout:
+                        continue
+                    if not chunk:
+                        raise ConnectionError("TTS 连接断开")
+                    payload += chunk
 
-        if stream:
-            time.sleep(0.3)  # 等待缓冲区排空
-            stream.stop_stream()
-            stream.close()
+                if interrupted:
+                    break
+
+                if header == b'TEXT':
+                    print(payload.decode('utf-8'), end="", flush=True)
+                elif header == b'AUDO':
+                    if stream is None:
+                        stream = self._pyaudio.open(
+                            format=pyaudio.paFloat32,
+                            channels=1,
+                            rate=self.sample_rate,
+                            output=True,
+                            frames_per_buffer=4096,
+                        )
+                    stream.write(payload)
+                elif header == b'EOT ':
+                    print()
+                    break
+        finally:
+            self._playing = False
+            if stream:
+                time.sleep(0.1)
+                stream.stop_stream()
+                stream.close()
+
+        return not interrupted
 
     def close(self):
         if self._sock:
@@ -113,13 +144,13 @@ class CloudTTSClient:
 
 
 class LLMRouter:
-    """云边双模路由：云端优先，超时切本地。"""
+    """云边双模路由：云端优先（CosyVoice2 流式），超时切本地（edge-tts 流式）。"""
 
     def __init__(
         self,
         cloud_tts: CloudTTSClient,
-        local_ollama,      # LocalOllamaClient
-        local_tts,          # LocalTTSClient
+        local_ollama,
+        local_tts,  # StreamingLocalTTS
         cloud_timeout: float = 10.0,
     ):
         self._cloud_tts = cloud_tts
@@ -131,19 +162,25 @@ class LLMRouter:
         self.local_fallbacks = 0
         self.consecutive_failures = 0
 
+    def stop(self):
+        """打断当前播放（云端或本地）。"""
+        self._cloud_tts.stop()
+        if self._local_tts:
+            self._local_tts.stop()
+
     def get_response_and_play(self, user_text: str) -> Tuple[str, str]:
         """
-        获取 AI 回复并播放语音。
+        获取 AI 回复并流式播放。
         返回 (response_text, source)，source 为 "cloud" 或 "local"。
         """
-        # 尝试云端
+        # 尝试云端（CosyVoice2 流式）
         if self._cloud_tts._sock or self._cloud_tts.connect():
             result_q: queue.Queue = queue.Queue()
 
             def _try():
                 try:
-                    self._cloud_tts.send_text_and_play(user_text)
-                    result_q.put(("ok", ""))
+                    ok = self._cloud_tts.send_text_and_play(user_text)
+                    result_q.put(("ok" if ok else "interrupted", ""))
                 except Exception as e:
                     result_q.put(("error", str(e)))
 
@@ -152,7 +189,8 @@ class LLMRouter:
             t.join(timeout=self._cloud_timeout)
 
             if t.is_alive():
-                logger.warning("云端 TTS 超时 (%.1fs)，切到本地", self._cloud_timeout)
+                logger.warning("云端 TTS 超时，切到本地")
+                self._cloud_tts.stop()
                 self._cloud_tts.close()
                 return self._fallback_local(user_text)
 
@@ -161,9 +199,10 @@ class LLMRouter:
             except queue.Empty:
                 return self._fallback_local(user_text)
 
-            if status == "ok":
-                self.cloud_successes += 1
-                self.consecutive_failures = 0
+            if status in ("ok", "interrupted"):
+                if status == "ok":
+                    self.cloud_successes += 1
+                    self.consecutive_failures = 0
                 return ("", "cloud")
 
             logger.warning("云端 TTS 错误: %s，切到本地", detail)

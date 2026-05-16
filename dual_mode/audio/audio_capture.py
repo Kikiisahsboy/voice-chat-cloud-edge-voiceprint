@@ -201,6 +201,17 @@ class AudioCapture:
     def is_cloud_asr(self) -> bool:
         return self._use_cloud_asr
 
+    def flush(self):
+        """清空音频队列和 ASR 缓冲区，避免识别到旧语音。"""
+        while not self._queue.empty():
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                break
+        if self._local_asr:
+            self._local_asr.reset()
+        logger.debug("音频队列和 ASR 缓冲区已清空")
+
     def disconnect_asr(self):
         if self._sock:
             try:

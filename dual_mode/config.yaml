@@ -20,7 +20,8 @@ servers:
 asr:
   local:
     # 本地 Vosk 模型路径（云 ASR 不可用时自动切换）
-    model_path: "D:/研一/多模态健康/比赛/vosk-model-cn-kaldi-multicn-0.15"
+    # 注意：路径不能含中文，Vosk C++ 底层不支持
+    model_path: "D:/vosk-model/vosk-model-cn-kaldi-multicn-0.15"
 
 # ----- LLM Dual-Mode -----
 llm:

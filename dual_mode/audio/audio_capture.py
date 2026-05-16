@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-Windows-compatible audio capture with VAD, noise reduction, and ASR streaming.
+Windows-compatible audio capture with VAD, noise reduction, and dual-mode ASR.
 
-Replaces the original AudioStreamClient (which depended on Linux Snowboy).
-Uses PyAudio + WebRTC VAD + noisereduce — all cross-platform.
+Supports both cloud ASR (TCP) and local ASR (Vosk). Falls back to local
+when cloud is unreachable.
 """
 
 import collections
@@ -45,18 +45,7 @@ def _ensure_deps():
 
 
 class AudioCapture:
-    """
-    Cross-platform audio capture with VAD and ASR streaming.
-
-    Usage (context manager):
-        with AudioCapture(asr_host, asr_port) as cap:
-            cap.calibrate_noise()
-            # Wake word detection
-            cap.wait_for_wake_word(wake_word_callback)
-            # Listen and get ASR results
-            for result in cap.listen_and_stream():
-                ...
-    """
+    """Cross-platform audio capture with VAD + dual-mode ASR."""
 
     def __init__(
         self,
@@ -65,11 +54,9 @@ class AudioCapture:
         sample_rate: int = 16000,
         frames_per_buffer: int = 2048,
         vad_aggressiveness: int = 3,
-        vad_frame_ms: int = 30,
         silence_timeout_s: float = 1.5,
-        speech_start_threshold: float = 0.5,
-        speech_end_threshold: float = 0.3,
         listen_timeout_s: float = 10.0,
+        local_asr=None,  # LocalASREngine instance (optional)
     ):
         _ensure_deps()
 
@@ -78,17 +65,17 @@ class AudioCapture:
         self.sample_rate = sample_rate
         self.frames_per_buffer = frames_per_buffer
         self.silence_timeout_s = silence_timeout_s
-        self.speech_start_threshold = speech_start_threshold
-        self.speech_end_threshold = speech_end_threshold
         self.listen_timeout_s = listen_timeout_s
 
-        # VAD
-        if vad_frame_ms not in (10, 20, 30):
-            raise ValueError("vad_frame_ms 必须是 10, 20, 或 30")
+        # VAD — fixed 30ms frames for WebRTC
         self.vad = _webrtcvad.Vad(vad_aggressiveness)
-        self.vad_frame_ms = vad_frame_ms
-        self.vad_frame_samples = int(sample_rate * vad_frame_ms / 1000)
-        self.vad_frame_bytes = self.vad_frame_samples * 2  # int16
+        self.vad_frame_ms = 30
+        self.vad_frame_samples = int(sample_rate * 30 / 1000)
+        self.vad_frame_bytes = self.vad_frame_samples * 2
+
+        # ASR mode
+        self._local_asr = local_asr
+        self._use_cloud_asr = False
 
         # State
         self._audio: Optional[_pyaudio.PyAudio] = None
@@ -114,7 +101,7 @@ class AudioCapture:
             self._audio = None
         self.disconnect_asr()
 
-    # ===== Stream Management =====
+    # ===== Stream =====
 
     def _start_stream(self):
         if self._stream and self._stream.is_active():
@@ -141,7 +128,6 @@ class AudioCapture:
                 self._stream.stop_stream()
             self._stream.close()
             self._stream = None
-        # Drain queue
         while not self._queue.empty():
             try:
                 self._queue.get_nowait()
@@ -159,12 +145,10 @@ class AudioCapture:
                 logger.error("音频读取错误: %s", e)
                 break
 
-    # ===== Noise Calibration =====
+    # ===== Noise =====
 
     def calibrate_noise(self, duration: float = 1.0):
-        """采集环境噪声用于降噪校准。"""
         if not self._noisereduce_available:
-            logger.info("降噪未启用（noisereduce 未安装）")
             return
         logger.info("正在采集环境噪声...（请保持安静 %.1f 秒）", duration)
         frames = []
@@ -191,17 +175,31 @@ class AudioCapture:
     # ===== ASR Connection =====
 
     def connect_asr(self) -> bool:
+        """尝试云端 ASR，不可达则切本地 Vosk。"""
         try:
             self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self._sock.settimeout(2.0)
             self._sock.connect((self.asr_host, self.asr_port))
             self._sock.settimeout(0.1)
-            logger.info("已连接 ASR 服务器 %s:%d", self.asr_host, self.asr_port)
+            self._use_cloud_asr = True
+            logger.info("已连接云端 ASR %s:%d", self.asr_host, self.asr_port)
             return True
         except Exception as e:
-            logger.error("连接 ASR 失败: %s", e)
+            logger.warning("云端 ASR 不可用 (%s)", e)
             self._sock = None
-            return False
+
+        if self._local_asr is not None:
+            self._use_cloud_asr = False
+            self._local_asr.reset()
+            logger.info("已切换到本地 Vosk ASR")
+            return True
+
+        logger.error("无可用的 ASR")
+        return False
+
+    @property
+    def is_cloud_asr(self) -> bool:
+        return self._use_cloud_asr
 
     def disconnect_asr(self):
         if self._sock:
@@ -211,18 +209,12 @@ class AudioCapture:
                 pass
             self._sock.close()
             self._sock = None
+        if self._local_asr:
+            self._local_asr.reset()
 
-    # ===== Wake Word Detection =====
+    # ===== Wake Word =====
 
     def wait_for_wake_word(self, wake_word_detector) -> bool:
-        """
-        Block until wake word is detected.
-
-        Args:
-            wake_word_detector: Object with a `detect(audio_bytes) -> bool` method.
-
-        Returns True when wake word is detected.
-        """
         logger.info("等待唤醒词...")
         while self._running:
             try:
@@ -234,129 +226,23 @@ class AudioCapture:
                 continue
         return False
 
-    # ===== Listen + Stream to ASR =====
-
-    def listen_and_stream(self) -> Generator[Optional[Dict[str, Any]], None, None]:
-        """
-        Listen for speech, stream to ASR, yield recognition results.
-
-        Yields dicts with "partial" or "text" keys.
-        """
-        if not self._sock:
-            logger.error("未连接 ASR 服务器")
-            return
-
-        # VAD state tracking
-        voiced_history = collections.deque(maxlen=15)  # ~450ms padding
-        is_speaking = False
-        speech_frames = 0
-        silence_frames = 0
-        send_buffer = bytearray()
-        last_activity = time.time()
-        last_heartbeat = time.time()
-
-        # Chunk size for sending to ASR
-        send_chunk_frames = max(1, 300 // self.vad_frame_ms)  # ~300ms chunks
-        send_chunk_bytes = self.vad_frame_bytes * send_chunk_frames
-        min_speech_frames = max(1, int(0.5 / (self.vad_frame_ms / 1000)))  # 0.5s min
-        max_silence_frames = max(1, int(self.silence_timeout_s / (self.vad_frame_ms / 1000)))
-
-        vad_buffer = b''
-
-        logger.info("开始监听用户语音...")
-
-        # Initialize accumulation
-        if hasattr(self, '_accumulate') and self._accumulate:
-            self._accumulated_audio = bytearray()
-
-        try:
-            while True:
-                # Timeout check
-                if time.time() - last_activity > self.listen_timeout_s:
-                    logger.info("聆听超时")
-                    if len(send_buffer) > 0:
-                        self._send_asr(send_buffer)
-                    return
-
-                # Heartbeat (only when not speaking)
-                if not is_speaking and time.time() - last_heartbeat > 5.0:
-                    try:
-                        self._sock.sendall(struct.pack('>I', 0))
-                        last_heartbeat = time.time()
-                    except Exception:
-                        logger.error("心跳发送失败")
-                        return
-
-                # Get audio data
-                try:
-                    data = self._queue.get(timeout=0.05)
-                except queue.Empty:
-                    # Check for ASR result
-                    result = self._recv_asr_result()
-                    if result:
-                        last_activity = time.time()
-                        yield result
-                        if result.get("text"):
-                            return
-                    continue
-
-                # Accumulate raw audio for voiceprint
-                if hasattr(self, '_accumulate') and self._accumulate:
-                    self._accumulated_audio.extend(data)
-
-                # Process audio
-                audio_np = np.frombuffer(data, dtype=np.int16)
-                audio_np = self._reduce_noise(audio_np)
-                vad_buffer += audio_np.tobytes()
-
-                # VAD frame processing
-                while len(vad_buffer) >= self.vad_frame_bytes:
-                    frame = vad_buffer[:self.vad_frame_bytes]
-                    vad_buffer = vad_buffer[self.vad_frame_bytes:]
-
-                    is_voice = self.vad.is_speech(frame, self.sample_rate)
-                    voiced_history.append(is_voice)
-
-                    if is_voice:
-                        speech_frames += 1
-                        silence_frames = 0
-                    else:
-                        silence_frames += 1
-                        speech_frames = 0
-
-                    voice_ratio = sum(voiced_history) / len(voiced_history)
-
-                    if not is_speaking:
-                        if voice_ratio >= self.speech_start_threshold and speech_frames >= 3:
-                            is_speaking = True
-                            logger.info("语音开始")
-                            last_activity = time.time()
-                    else:
-                        if voice_ratio <= self.speech_end_threshold and silence_frames >= max_silence_frames:
-                            is_speaking = False
-                            logger.info("语音结束")
-                            if len(send_buffer) > 0:
-                                self._send_asr(send_buffer)
-                                send_buffer = bytearray()
-
-                # Send audio while speaking
-                if is_speaking:
-                    send_buffer.extend(audio_np.tobytes())
-                    while len(send_buffer) >= send_chunk_bytes:
-                        chunk = bytes(send_buffer[:send_chunk_bytes])
-                        send_buffer = send_buffer[send_chunk_bytes:]
-                        self._send_asr(chunk)
-
-        except (ConnectionResetError, BrokenPipeError, socket.error) as e:
-            logger.error("ASR 连接断开: %s", e)
-            self.disconnect_asr()
-            raise
+    # ===== ASR helpers =====
 
     def _send_asr(self, data: bytes):
-        if self._sock and len(data) > 0:
+        if self._use_cloud_asr and self._sock and len(data) > 0:
             self._sock.sendall(struct.pack('>I', len(data)) + data)
 
-    def _recv_asr_result(self) -> Optional[Dict[str, Any]]:
+    def _send_local_asr(self, data: bytes) -> Optional[dict]:
+        if not self._use_cloud_asr and self._local_asr and data:
+            return self._local_asr.accept_waveform(bytes(data))
+        return None
+
+    def _recv_asr(self) -> Optional[dict]:
+        if self._use_cloud_asr:
+            return self._recv_cloud_asr()
+        return None
+
+    def _recv_cloud_asr(self) -> Optional[dict]:
         if not self._sock:
             return None
         try:
@@ -377,16 +263,152 @@ class AudioCapture:
         except socket.timeout:
             return None
 
+    def _local_final_result(self) -> Optional[dict]:
+        if not self._use_cloud_asr and self._local_asr:
+            return self._local_asr.final_result()
+        return None
+
+    # ===== Listen + Stream =====
+
+    def listen_and_stream(self) -> Generator[Optional[Dict[str, Any]], None, None]:
+        """Listen for speech, stream to ASR (cloud or local), yield results."""
+
+        # VAD state
+        voiced_history = collections.deque(maxlen=15)
+        send_buffer = bytearray()
+        last_activity = time.time()
+        last_heartbeat = time.time()
+        is_speaking = False
+        speech_start_hits = 0
+        silence_hits = 0
+
+        send_chunk_bytes = self.vad_frame_bytes * 10  # ~300ms
+        silence_hits_needed = int(self.silence_timeout_s / (self.vad_frame_ms / 1000))
+
+        label = "云端" if self._use_cloud_asr else "本地Vosk"
+        logger.info("开始监听... (%s)", label)
+
+        if hasattr(self, '_accumulate') and self._accumulate:
+            self._accumulated_audio = bytearray()
+
+        vad_buffer = b''
+
+        try:
+            while True:
+                if time.time() - last_activity > self.listen_timeout_s:
+                    logger.info("聆听超时")
+                    if len(send_buffer) > 0 and self._use_cloud_asr:
+                        self._send_asr(send_buffer)
+                    if not self._use_cloud_asr:
+                        final = self._local_final_result()
+                        if final:
+                            yield final
+                    return
+
+                # Heartbeat (cloud only)
+                if not is_speaking and self._use_cloud_asr and time.time() - last_heartbeat > 5.0:
+                    try:
+                        self._sock.sendall(struct.pack('>I', 0))
+                        last_heartbeat = time.time()
+                    except Exception:
+                        logger.error("心跳发送失败")
+                        return
+
+                # Get audio
+                try:
+                    data = self._queue.get(timeout=0.05)
+                except queue.Empty:
+                    # Check cloud ASR results
+                    if self._use_cloud_asr:
+                        result = self._recv_cloud_asr()
+                        if result:
+                            last_activity = time.time()
+                            yield result
+                            if result.get("text"):
+                                return
+                    continue
+
+                # Voiceprint accumulation
+                if hasattr(self, '_accumulate') and self._accumulate:
+                    self._accumulated_audio.extend(data)
+
+                audio_np = np.frombuffer(data, dtype=np.int16)
+                audio_np = self._reduce_noise(audio_np)
+                vad_buffer += audio_np.tobytes()
+
+                # VAD frame-by-frame
+                while len(vad_buffer) >= self.vad_frame_bytes:
+                    frame = vad_buffer[:self.vad_frame_bytes]
+                    vad_buffer = vad_buffer[self.vad_frame_bytes:]
+
+                    is_voice = self.vad.is_speech(frame, self.sample_rate)
+                    voiced_history.append(is_voice)
+                    voice_ratio = sum(voiced_history) / len(voiced_history)
+
+                    if is_voice:
+                        speech_start_hits += 1
+                        silence_hits = 0
+                    else:
+                        silence_hits += 1
+                        speech_start_hits = 0
+
+                    if not is_speaking:
+                        if voice_ratio >= 0.5 and speech_start_hits >= 3:
+                            is_speaking = True
+                            logger.info("语音开始")
+                            last_activity = time.time()
+                    else:
+                        # Send while speaking
+                        send_buffer.extend(frame)
+                        last_activity = time.time()
+
+                        # Send to ASR in chunks
+                        while len(send_buffer) >= send_chunk_bytes:
+                            chunk = bytes(send_buffer[:send_chunk_bytes])
+                            send_buffer = send_buffer[send_chunk_bytes:]
+                            self._send_asr(chunk)
+                            # Local ASR: send and yield results immediately
+                            local_r = self._send_local_asr(chunk)
+                            if local_r:
+                                yield local_r
+
+                        # End detection
+                        if silence_hits >= silence_hits_needed:
+                            logger.info("语音结束")
+                            if len(send_buffer) > 0:
+                                self._send_asr(bytes(send_buffer))
+                                local_r = self._send_local_asr(bytes(send_buffer))
+                                if local_r:
+                                    yield local_r
+
+                            if self._use_cloud_asr:
+                                self._send_asr(b'\x00')  # EOS
+                                while True:
+                                    r = self._recv_cloud_asr()
+                                    if r:
+                                        yield r
+                                        if r.get("text"):
+                                            return
+                                    else:
+                                        break
+                            else:
+                                final = self._local_final_result()
+                                if final:
+                                    yield final
+                            return
+
+        except (ConnectionResetError, BrokenPipeError) as e:
+            logger.error("ASR 连接断开: %s", e)
+            raise
+
     # ===== Raw audio accumulation (for voiceprint) =====
 
     def accumulate_audio(self, enable: bool = True):
-        """Enable/disable raw audio accumulation for voiceprint capture."""
         self._accumulate = enable
         if enable:
             self._accumulated_audio = bytearray()
 
     def get_accumulated_audio(self) -> Optional[np.ndarray]:
-        """Return accumulated raw audio as float32 numpy array and reset."""
         if not hasattr(self, '_accumulated_audio') or not self._accumulated_audio:
             return None
         raw = bytes(self._accumulated_audio)

@@ -41,6 +41,7 @@ _LocalOllamaClient = None
 _LocalTTSClient = None
 _SpeechBrainEngine = None
 _SpeakerManager = None
+_LocalASREngine = None
 
 _import_errors: dict = {}
 
@@ -81,6 +82,12 @@ try:
 except ImportError as e:
     _import_errors['local_tts'] = str(e)
 
+# 本地 ASR
+try:
+    from dual_mode.asr.local_asr import LocalASREngine as _LocalASREngine
+except ImportError as e:
+    _import_errors['local_asr'] = str(e)
+
 # 声纹
 try:
     from dual_mode.voiceprint.speechbrain_engine import SpeechBrainEngine as _SpeechBrainEngine
@@ -114,6 +121,18 @@ class DualModeOrchestrator:
             except Exception as e:
                 logger.warning("唤醒词加载失败: %s", e)
 
+        # ── 本地 ASR ────────────────────────────
+        self.local_asr = None
+        if _LocalASREngine and os.path.isdir(cfg.asr.local.model_path):
+            try:
+                self.local_asr = _LocalASREngine(
+                    model_path=cfg.asr.local.model_path,
+                    sample_rate=cfg.audio.sample_rate,
+                )
+                logger.info("本地 ASR 就绪")
+            except Exception as e:
+                logger.warning("本地 ASR 初始化失败: %s", e)
+
         # ── 音频捕获 ────────────────────────────
         self.audio_capture = None
         if _AudioCapture:
@@ -122,12 +141,9 @@ class DualModeOrchestrator:
                 asr_port=cfg.servers.cloud.asr.port,
                 sample_rate=cfg.audio.sample_rate,
                 frames_per_buffer=cfg.audio.frames_per_buffer,
-                vad_aggressiveness=cfg.audio.vad_aggressiveness,
-                vad_frame_ms=cfg.audio.vad_frame_ms,
                 silence_timeout_s=cfg.audio.silence_timeout_seconds,
-                speech_start_threshold=cfg.audio.speech_start_threshold,
-                speech_end_threshold=cfg.audio.speech_end_threshold,
                 listen_timeout_s=cfg.conversation.listen_timeout_seconds,
+                local_asr=self.local_asr,  # 云端不可用时自动切换
             )
 
         # ── 云端 TTS ────────────────────────────
@@ -328,8 +344,11 @@ class DualModeOrchestrator:
         with self.audio_capture as cap:
             cap.calibrate_noise()
             if not cap.connect_asr():
-                print("无法连接 ASR 服务器，退出。")
+                print("所有 ASR 均不可用，退出。")
                 return
+
+            mode = "云端" if cap.is_cloud_asr else "本地 Vosk"
+            print(f"ASR 模式: {mode}")
 
             state = AssistantState.IDLE
 

@@ -16,6 +16,12 @@ servers:
     ollama:
       base_url: "http://localhost:11434"
 
+# ----- Local ASR (Vosk) -----
+asr:
+  local:
+    # 本地 Vosk 模型路径（云 ASR 不可用时自动切换）
+    model_path: "D:/研一/多模态健康/比赛/vosk-model-cn-kaldi-multicn-0.15"
+
 # ----- LLM Dual-Mode -----
 llm:
   strategy: "cloud_first"

@@ -331,7 +331,7 @@ def chat_stream():
                         "content": char,
                         "is_final": i == len(response) - 1
                     }).encode() + b'\n'
-                    time.sleep(0.03)
+                    time.sleep(0.03)  # 控制文本流速
 
                 # TTS 完整音频（末尾发送）
                 audio_b64 = _tts_to_base64(response)
@@ -374,41 +374,22 @@ def chat_stream():
                         "is_final": i == len(response) - 1
                     }).encode() + b'\n'
                     time.sleep(0.03)  # 控制文本流速
-                
-                # TTS 流式生成
-                import asyncio
-                try:
-                    import edge_tts
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    
-                    async def run_tts():
-                        communicate = edge_tts.Communicate(response, "zh-CN-XiaoxiaoNeural")
-                        async for chunk in communicate.stream():
-                            if chunk["type"] == "audio":
-                                audio_chunk = base64.b64encode(chunk["data"]).decode("utf-8")
-                                yield json.dumps({
-                                    "type": "audio_chunk",
-                                    "content": audio_chunk,
-                                    "mime": "audio/mp3"
-                                }).encode() + b'\n'
-                    
-                    loop.run_until_complete(run_tts())
-                    loop.close()
-                    
-                except Exception as e:
-                    logger.error("TTS 错误: %s", e)
+                # TTS 完整音频（末尾发送）
+                audio_b64 = _tts_to_base64(response)
+                if audio_b64:
                     yield json.dumps({
-                        "type": "error",
-                        "content": f"TTS 错误: {str(e)}"
+                        "type": "audio",
+                        "content": audio_b64,
+                        "mime": "audio/mp3"
                     }).encode() + b'\n'
-                    
+
             except Exception as e:
-                logger.error("LLM 错误: %s", e)
+                logger.error("LLM 流式错误: %s", e)
                 yield json.dumps({
                     "type": "error",
                     "content": f"服务暂时不可用: {str(e)}"
                 }).encode() + b'\n'
+
                 
         return Response(generate_response(), mimetype='text/plain')
 
@@ -483,90 +464,36 @@ def index():
 #  辅助函数
 # ═══════════════════════════════════════════════════════
 
-def convert_webm_to_wav_array(webm_bytes, target_sample_rate=16000):
-    """
-    将WebM格式音频转换为numpy数组（16kHz, 16-bit, 单声道）
-    需要安装ffmpeg: apt-get install ffmpeg
-    """
+def read_wav_to_array(wav_bytes, target_sr=16000):
+    """直接读取 WAV 字节为 float32 numpy 数组，无需 ffmpeg。"""
+    import io, wave
     try:
-        import numpy as np
-        import subprocess
-        import io
-        
-        # 创建临时文件
-        with tempfile.NamedTemporaryFile(suffix='.webm', delete=True) as temp_file:
-            temp_file.write(webm_bytes)
-            temp_file.flush()
-            
-            # 使用ffmpeg转换
-            command = [
-                'ffmpeg',
-                '-i', temp_file.name,
-                '-ar', str(target_sample_rate),  # 采样率
-                '-ac', '1',                    # 单声道
-                '-f', 'wav',                   # 输出WAV格式
-                '-'
-            ]
-            
-            logger.info(f"FFmpeg命令: {' '.join(command)}")
-            
-            # 执行ffmpeg
-            process = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                stdin=subprocess.DEVNULL
-            )
-            
-            stdout, stderr = process.communicate()
-            
-            if process.returncode != 0:
-                logger.error(f"FFmpeg转换失败，返回码: {process.returncode}")
-                logger.error(f"FFmpeg错误输出: {stderr.decode('utf-8', errors='ignore')}")
-                return None
-            
-            logger.info(f"FFmpeg转换成功，输出大小: {len(stdout)}字节")
-            
-            # 从WAV数据中提取PCM
-            with io.BytesIO(stdout) as wav_buffer:
-                import wave
-                with wave.open(wav_buffer, 'rb') as wav_file:
-                    # 检查WAV文件格式
-                    n_channels = wav_file.getnchannels()
-                    sample_width = wav_file.getsampwidth()
-                    frame_rate = wav_file.getframerate()
-                    
-                    logger.info(f"WAV格式: 通道数={n_channels}, 采样宽度={sample_width}字节, 采样率={frame_rate}")
-                    
-                    frames = wav_file.readframes(wav_file.getnframes())
-                    
-                    if sample_width == 2:  # 16-bit
-                        audio_np = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
-                    elif sample_width == 1:  # 8-bit
-                        audio_np = np.frombuffer(frames, dtype=np.uint8).astype(np.float32)
-                        audio_np = (audio_np - 128) / 128.0
-                    elif sample_width == 4:  # 32-bit
-                        audio_np = np.frombuffer(frames, dtype=np.int32).astype(np.float32) / 2147483648.0
-                    else:
-                        raise ValueError(f"不支持的采样宽度: {sample_width}字节")
-                    
-                    # 确保是单声道
-                    if n_channels > 1:
-                        audio_np = audio_np.reshape(-1, n_channels).mean(axis=1)
-                    
-                    # 检查音频质量
-                    if len(audio_np) < target_sample_rate * 0.5:  # 少于0.5秒
-                        logger.warning(f"音频太短: {len(audio_np)/target_sample_rate:.2f}秒")
-                    
-                    max_val = np.max(np.abs(audio_np))
-                    if max_val < 0.01:
-                        logger.warning(f"音频音量过低: 最大振幅={max_val:.6f}")
-                    
-                    return audio_np
-                    
+        with wave.open(io.BytesIO(wav_bytes), 'rb') as wf:
+            nch = wf.getnchannels()
+            sw = wf.getsampwidth()
+            sr = wf.getframerate()
+            frames = wf.readframes(wf.getnframes())
+
+        if sw == 2:
+            audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+        elif sw == 1:
+            audio = (np.frombuffer(frames, dtype=np.uint8).astype(np.float32) - 128) / 128.0
+        else:
+            return None
+
+        if nch > 1:
+            audio = audio.reshape(-1, nch).mean(axis=1)
+
+        if sr != target_sr:
+            logger.warning("采样率不匹配: %d vs %d", sr, target_sr)
+
+        return audio
     except Exception as e:
-        logger.error(f"音频转换错误: {e}", exc_info=True)
+        logger.error("WAV 读取失败: %s", e)
         return None
+
+# 兼容旧函数名
+convert_webm_to_wav_array = read_wav_to_array
 
 
 def clean_asr_text(text):

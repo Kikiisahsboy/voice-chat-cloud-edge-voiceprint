@@ -321,8 +321,13 @@ async function sendText() {
 }
 
 // ═══════════════════════════════════════════════════════
-//  Voice recording with streaming
+//  Voice recording — Web Audio API → WAV (no ffmpeg)
 // ═══════════════════════════════════════════════════════
+let audioCtx = null;
+let pcmChunks = [];
+let scriptNode = null;
+let micStream = null;
+
 micBtn.addEventListener('click', async () => {
   if (isRecording) {
     stopRecording();
@@ -331,60 +336,109 @@ micBtn.addEventListener('click', async () => {
   }
 });
 
+function encodeWav(samples, sampleRate) {
+  // samples: Float32Array, mono, range [-1, 1]
+  const numChannels = 1;
+  const bitsPerSample = 16;
+  const byteRate = sampleRate * numChannels * bitsPerSample / 8;
+  const blockAlign = numChannels * bitsPerSample / 8;
+  const dataLength = samples.length * blockAlign;
+  const buffer = new ArrayBuffer(44 + dataLength);
+  const view = new DataView(buffer);
+
+  function writeStr(offset, str) {
+    for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+  }
+  writeStr(0, 'RIFF');
+  view.setUint32(4, 36 + dataLength, true);
+  writeStr(8, 'WAVE');
+  writeStr(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, byteRate, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, bitsPerSample, true);
+  writeStr(36, 'data');
+  view.setUint32(40, dataLength, true);
+
+  let offset = 44;
+  for (let i = 0; i < samples.length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    offset += 2;
+  }
+  return new Blob([buffer], { type: 'audio/wav' });
+}
+
 async function startRecording() {
   try {
-    // Request microphone access with proper audio constraints
-    const stream = await navigator.mediaDevices.getUserMedia({ 
-      audio: { 
-        sampleRate: 16000, 
-        channelCount: 1,
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true
-      } 
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true }
     });
-    mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
-    audioChunks = [];
+    micStream = stream;
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+    const source = audioCtx.createMediaStreamSource(stream);
+    scriptNode = audioCtx.createScriptProcessor(4096, 1, 1);
+    pcmChunks = [];
 
-    mediaRecorder.ondataavailable = e => { 
-      if(e.data.size > 0) audioChunks.push(e.data); 
-    };
-    
-    mediaRecorder.onstop = () => {
-      stream.getTracks().forEach(t => t.stop());
-      processVoice();
+    scriptNode.onaudioprocess = (e) => {
+      if (!isRecording) return;
+      const input = e.inputBuffer.getChannelData(0);
+      pcmChunks.push(new Float32Array(input));
     };
 
-    mediaRecorder.start();
+    source.connect(scriptNode);
+    scriptNode.connect(audioCtx.destination);
     isRecording = true;
     micBtn.classList.add('recording');
     statusEl.textContent = '● 录音中... 点击停止';
     statusEl.classList.add('recording');
   } catch(e) {
     statusEl.textContent = '无法访问麦克风: ' + e.message;
-    console.error('Error accessing microphone:', e);
+    console.error(e);
   }
 }
 
 function stopRecording() {
-  if (mediaRecorder && mediaRecorder.state === 'recording') {
-    mediaRecorder.stop();
-  }
   isRecording = false;
   micBtn.classList.remove('recording');
   statusEl.classList.remove('recording');
   statusEl.textContent = '处理中...';
-}
 
-async function processVoice() {
-  if (audioChunks.length === 0) {
-    statusEl.textContent = '录音数据为空，请重试';
+  if (scriptNode) {
+    scriptNode.disconnect();
+    scriptNode = null;
+  }
+  if (audioCtx) {
+    audioCtx.close();
+    audioCtx = null;
+  }
+  if (micStream) {
+    micStream.getTracks().forEach(t => t.stop());
+    micStream = null;
+  }
+
+  if (pcmChunks.length === 0) {
+    statusEl.textContent = '录音数据为空';
     return;
   }
-  
-  const blob = new Blob(audioChunks, { type: 'audio/webm' });
+
+  // Merge all PCM chunks and encode as WAV
+  let totalLen = 0;
+  pcmChunks.forEach(c => totalLen += c.length);
+  const merged = new Float32Array(totalLen);
+  let pos = 0;
+  pcmChunks.forEach(c => { merged.set(c, pos); pos += c.length; });
+
+  const wavBlob = encodeWav(merged, 16000);
+  processVoiceWav(wavBlob);
+}
+
+async function processVoiceWav(wavBlob) {
   const formData = new FormData();
-  formData.append('audio', blob, 'recording.webm');
+  formData.append('audio', wavBlob, 'recording.wav');
 
   hideEmpty();
   showTyping();

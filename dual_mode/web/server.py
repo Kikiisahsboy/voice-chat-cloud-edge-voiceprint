@@ -162,8 +162,9 @@ def chat_voice():
             # 重置ASR引擎
             _local_asr.reset()
             
-            # 处理音频
-            _local_asr.accept_waveform(audio_np.tobytes())
+            # 转 int16 PCM 送 Vosk
+            raw = (audio_np * 32768.0).astype(np.int16).tobytes()
+            _local_asr.accept_waveform(raw)
             result = _local_asr.final_result()
             
             if result and result.get("text"):
@@ -266,10 +267,11 @@ def chat_stream():
                 # 重置ASR引擎
                 _local_asr.reset()
                 
-                # 处理音频
-                _local_asr.accept_waveform(audio_np.tobytes())
+                # 转 int16 PCM 送 Vosk
+                raw = (audio_np * 32768.0).astype(np.int16).tobytes()
+                _local_asr.accept_waveform(raw)
                 result = _local_asr.final_result()
-                
+
                 if result and result.get("text"):
                     user_text = result["text"].strip()
                     user_text = clean_asr_text(user_text)

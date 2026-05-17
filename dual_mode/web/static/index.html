@@ -294,11 +294,15 @@ async function sendText() {
                 break;
                 
               case 'audio_chunk':
-                // Store audio data for later playback
+              case 'audio':  // 兼容两种字段名
                 aiMsgDiv.audioData = data.content;
                 aiMsgDiv.audioMime = data.mime;
+                // 流式文本完成后如果有音频数据，追加播放按钮
+                if (textContainer.textContent) {
+                  addAudioButton(aiMsgDiv, data.content, data.mime);
+                }
                 break;
-                
+
               case 'error':
                 hideTyping();
                 addMessage(data.content, 'ai');
@@ -310,7 +314,7 @@ async function sendText() {
         }
       }
     }
-    
+
     hideTyping();
   } catch(e) {
     hideTyping();
@@ -496,13 +500,18 @@ async function processVoiceWav(wavBlob) {
                 break;
                 
               case 'audio_chunk':
-                // Store audio data for later playback
+              case 'audio':  // 兼容两种字段名
                 if (window.currentAiMsg) {
                   window.currentAiMsg.audioData = data.content;
                   window.currentAiMsg.audioMime = data.mime;
+                  // 立即添加播放按钮
+                  const tc = window.currentAiMsg.querySelector('.body');
+                  if (tc && tc.textContent) {
+                    addAudioButton(window.currentAiMsg, data.content, data.mime);
+                  }
                 }
                 break;
-                
+
               case 'error':
                 hideTyping();
                 addMessage(data.content, 'ai');

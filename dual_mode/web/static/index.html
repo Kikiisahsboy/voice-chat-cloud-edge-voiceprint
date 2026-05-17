@@ -297,7 +297,7 @@ async function sendText() {
               case 'audio':  // 兼容两种字段名
                 aiMsgDiv.audioData = data.content;
                 aiMsgDiv.audioMime = data.mime;
-                // 流式文本完成后如果有音频数据，追加播放按钮
+                enqueueAudioChunk(data.content, data.mime);
                 if (textContainer.textContent) {
                   addAudioButton(aiMsgDiv, data.content, data.mime);
                 }
@@ -491,7 +491,8 @@ async function processVoiceWav(wavBlob) {
                 break;
 
               case 'audio_chunk':
-              case 'audio':  // 兼容两种字段名
+              case 'audio':
+                enqueueAudioChunk(data.content, data.mime);
                 if (window.currentAiMsg) {
                   window.currentAiMsg.audioData = data.content;
                   window.currentAiMsg.audioMime = data.mime;
@@ -524,12 +525,38 @@ async function processVoiceWav(wavBlob) {
 }
 
 // ═══════════════════════════════════════════════════════
-//  Audio playback
+//  Streaming audio playback — 收到第一块立即播放
 // ═══════════════════════════════════════════════════════
-function playAudio(b64, mime) {
+let audioChunkQueue = [];
+let audioPlaying = false;
+let audioMimeType = 'audio/mp3';
+
+function enqueueAudioChunk(b64, mime) {
+  audioMimeType = mime || 'audio/mp3';
+  audioChunkQueue.push(b64);
+  if (!audioPlaying) playNextChunk();
+}
+
+function playNextChunk() {
+  if (audioChunkQueue.length === 0) { audioPlaying = false; return; }
+  audioPlaying = true;
+  const b64 = audioChunkQueue.shift();
   const bin = atob(b64);
   const bytes = new Uint8Array(bin.length);
-  for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const blob = new Blob([bytes], { type: audioMimeType });
+  const url = URL.createObjectURL(blob);
+  const a = new Audio(url);
+  a.onended = () => { URL.revokeObjectURL(url); playNextChunk(); };
+  a.onerror = () => { URL.revokeObjectURL(url); playNextChunk(); };
+  a.play().catch(() => { URL.revokeObjectURL(url); playNextChunk(); });
+}
+
+function playAudio(b64, mime) {
+  // 完整音频播放（兼容旧接口）
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   const blob = new Blob([bytes], { type: mime || 'audio/mp3' });
   const url = URL.createObjectURL(blob);
   const a = new Audio(url);
@@ -583,19 +610,27 @@ function addStreamingMessage(role) {
 
 function addAudioButton(msgDiv, audioData, audioMime) {
   if (!audioData) return;
-  
-  const audioBtn = document.createElement('button');
-  audioBtn.className = 'audio-btn';
-  audioBtn.textContent = '🔊 播放';
-  audioBtn.addEventListener('click', () => {
-    audioBtn.textContent = '🔊 播放中...';
-    playAudio(audioData, audioMime);
-    setTimeout(() => { audioBtn.textContent = '🔊 播放'; }, 2000);
-  });
-  
-  // Insert before the time element
-  const timeElement = msgDiv.querySelector('.time');
-  msgDiv.insertBefore(audioBtn, timeElement);
+
+  // 如果已有按钮，只更新数据（流式追加）
+  let btn = msgDiv.querySelector('.audio-btn');
+  if (!btn) {
+    btn = document.createElement('button');
+    btn.className = 'audio-btn';
+    btn.textContent = '🔊 播放';
+    btn.addEventListener('click', () => {
+      btn.textContent = '🔊 播放中...';
+      // 播放队列中所有已收集的块
+      if (audioChunkQueue.length > 0) {
+        audioPlaying = false; playNextChunk();
+      } else {
+        playAudio(audioData, audioMime);
+      }
+      setTimeout(() => { btn.textContent = '🔊 播放'; }, 2000);
+    });
+    const timeElement = msgDiv.querySelector('.time');
+    if (timeElement) msgDiv.insertBefore(btn, timeElement);
+    else msgDiv.appendChild(btn);
+  }
 }
 
 function showTyping() { typing.classList.add('active'); scrollBottom(); }

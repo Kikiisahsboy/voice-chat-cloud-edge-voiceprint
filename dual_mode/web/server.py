@@ -335,12 +335,11 @@ def chat_stream():
                     }).encode() + b'\n'
                     time.sleep(0.03)  # 控制文本流速
 
-                # TTS 完整音频（末尾发送）
-                audio_b64 = _tts_to_base64(response)
-                if audio_b64:
+                # TTS 流式音频块（边合成边发送）
+                for chunk_b64 in _stream_tts(response):
                     yield json.dumps({
-                        "type": "audio",
-                        "content": audio_b64,
+                        "type": "audio_chunk",
+                        "content": chunk_b64,
                         "mime": "audio/mp3"
                     }).encode() + b'\n'
             except Exception as e:
@@ -376,12 +375,11 @@ def chat_stream():
                         "is_final": i == len(response) - 1
                     }).encode() + b'\n'
                     time.sleep(0.03)  # 控制文本流速
-                # TTS 完整音频（末尾发送）
-                audio_b64 = _tts_to_base64(response)
-                if audio_b64:
+                # TTS 流式音频块（边合成边发送）
+                for chunk_b64 in _stream_tts(response):
                     yield json.dumps({
-                        "type": "audio",
-                        "content": audio_b64,
+                        "type": "audio_chunk",
+                        "content": chunk_b64,
                         "mime": "audio/mp3"
                     }).encode() + b'\n'
 
@@ -548,6 +546,69 @@ def _tts_to_base64(text: str) -> str:
     except Exception as e:
         logger.warning("TTS 合成失败 (可能网络不通): %s", e)
     return ""
+
+def _stream_tts(text):
+    """流式 TTS：边合成边产出 base64 音频块。"""
+    q = []
+    async def _run():
+        try:
+            communicate = edge_tts.Communicate(text, "zh-CN-XiaoxiaoNeural")
+            async for chunk in communicate.stream():
+                if chunk["type"] == "audio":
+                    q.append(chunk["data"])
+        except Exception as e:
+            logger.warning("TTS 流式错误: %s", e)
+        q.append(None)
+
+    def _thread():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(_run())
+        loop.close()
+
+    t = threading.Thread(target=_thread, daemon=True)
+    t.start()
+    idx = 0
+    while True:
+        while idx < len(q):
+            d = q[idx]; idx += 1
+            if d is None:
+                return
+            yield base64.b64encode(d).decode("utf-8")
+        time.sleep(0.02)
+
+def _stream_tts(text):
+    """流式 TTS：边合成边产出 base64 音频块。"""
+    q = []
+    done = [False]
+
+    async def _run():
+        try:
+            communicate = edge_tts.Communicate(text, "zh-CN-XiaoxiaoNeural")
+            async for chunk in communicate.stream():
+                if chunk["type"] == "audio":
+                    q.append(chunk["data"])
+        except Exception as e:
+            logger.warning("TTS 流式错误: %s", e)
+        q.append(None)
+
+    import asyncio as _a
+    def _thread():
+        loop = _a.new_event_loop()
+        _a.set_event_loop(loop)
+        loop.run_until_complete(_run())
+        loop.close()
+
+    t = threading.Thread(target=_thread, daemon=True)
+    t.start()
+    idx = 0
+    while True:
+        while idx < len(q):
+            d = q[idx]; idx += 1
+            if d is None: return
+            yield base64.b64encode(d).decode("utf-8")
+        time.sleep(0.02)
+
 
 
 # ═══════════════════════════════════════════════════════

@@ -483,32 +483,19 @@ async function processVoiceWav(wavBlob) {
                 break;
                 
               case 'text_chunk':
-                // If AI message doesn't exist yet, create it
                 if (!window.currentAiMsg) {
                   window.currentAiMsg = addStreamingMessage('ai');
                 }
-                
-                const textContainer = window.currentAiMsg.querySelector('.body');
-                textContainer.textContent += data.content;
+                window.currentAiMsg.querySelector('.body').textContent += data.content;
                 scrollBottom();
-                
-                if (data.is_final) {
-                  // Add audio button after text is complete
-                  addAudioButton(window.currentAiMsg, window.currentAiMsg.audioData, window.currentAiMsg.audioMime);
-                  window.currentAiMsg = null; // Reset current AI message reference
-                }
                 break;
-                
+
               case 'audio_chunk':
               case 'audio':  // 兼容两种字段名
                 if (window.currentAiMsg) {
                   window.currentAiMsg.audioData = data.content;
                   window.currentAiMsg.audioMime = data.mime;
-                  // 立即添加播放按钮
-                  const tc = window.currentAiMsg.querySelector('.body');
-                  if (tc && tc.textContent) {
-                    addAudioButton(window.currentAiMsg, data.content, data.mime);
-                  }
+                  addAudioButton(window.currentAiMsg, data.content, data.mime);
                 }
                 break;
 

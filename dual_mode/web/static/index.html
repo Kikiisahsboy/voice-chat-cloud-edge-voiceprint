@@ -2,270 +2,557 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Voice Chat</title>
 <style>
+/* ═══════════════════════════════════════════════════════
+   Apple-style minimalist design
+   ═══════════════════════════════════════════════════════ */
 :root {
-  --bg: #f5f5f7; --card: rgba(255,255,255,0.72); --text: #1d1d1f; --sub: #86868b;
-  --blue: #0071e3; --bubble-user: #0071e3; --bubble-ai: #e8e8ed;
-  --border: rgba(0,0,0,0.06); --shadow: 0 1px 3px rgba(0,0,0,0.04), 0 8px 30px rgba(0,0,0,0.06);
-  --radius: 20px; --radius-sm: 14px;
+  --bg: #f5f5f7;
+  --card: rgba(255,255,255,0.72);
+  --text: #1d1d1f;
+  --sub: #86868b;
+  --blue: #0071e3;
+  --bubble-user: #0071e3;
+  --bubble-ai: #e8e8ed;
+  --border: rgba(0,0,0,0.06);
+  --shadow: 0 1px 3px rgba(0,0,0,0.04), 0 8px 30px rgba(0,0,0,0.06);
+  --radius: 20px;
+  --radius-sm: 12px;
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC", "Microsoft YaHei", sans-serif;
 }
-*{margin:0;padding:0;box-sizing:border-box}
-html,body{height:100%;background:var(--bg)}
-body{
-  font-family:var(--font); color:var(--text);
-  display:flex; justify-content:center; align-items:center;
-  -webkit-font-smoothing:antialiased;
+* { margin:0; padding:0; box-sizing:border-box; }
+html, body { height:100%; }
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  -webkit-font-smoothing: antialiased;
 }
-.app{
-  width:100%;max-width:480px;height:100vh;max-height:860px;
-  display:flex;flex-direction:column;background:rgba(255,255,255,0.55);
-  backdrop-filter:blur(40px) saturate(180%);-webkit-backdrop-filter:blur(40px) saturate(180%);
-  box-shadow:var(--shadow);overflow:hidden;
+/* ── Container ──────────────────────────────── */
+.app {
+  width: 100%; max-width: 460px; height: 100vh; max-height: 860px;
+  display: flex; flex-direction: column;
+  background: rgba(255,255,255,0.6);
+  backdrop-filter: blur(40px) saturate(180%);
+  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  border-radius: 0; box-shadow: var(--shadow);
+  overflow: hidden;
 }
-@media(min-width:500px){.app{border-radius:32px;margin:16px;height:calc(100vh - 32px)}}
-.header{padding:14px 20px 8px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--border);flex-shrink:0}
-.header .dot{width:10px;height:10px;border-radius:50%}
-.header .dot.red{background:#ff5f57}.header .dot.yellow{background:#febc2e}.header .dot.green{background:#28c840}
-.header .title{flex:1;text-align:center;font-size:15px;font-weight:600;letter-spacing:-0.2px}
-.header .badge{font-size:11px;color:var(--sub);background:rgba(0,0,0,0.04);padding:3px 10px;border-radius:20px;font-weight:500}
-.messages{flex:1;overflow-y:auto;padding:20px 16px;display:flex;flex-direction:column;gap:6px;scroll-behavior:smooth}
-.messages::-webkit-scrollbar{width:0}
-.msg{max-width:84%;padding:10px 15px;border-radius:var(--radius-sm);font-size:15px;line-height:1.5;word-break:break-word;animation:fadeUp 0.25s ease-out;position:relative}
-@keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
-.msg.user{align-self:flex-end;background:var(--bubble-user);color:#fff;border-bottom-right-radius:4px}
-.msg.ai{align-self:flex-start;background:var(--bubble-ai);color:var(--text);border-bottom-left-radius:4px}
-.msg .speaker-tag{font-size:10px;opacity:0.6;margin-bottom:2px;font-weight:500;display:block}
-.msg .body{white-space:pre-wrap}
-.msg.ai .body .cursor{display:inline-block;width:2px;height:1em;background:var(--blue);margin-left:1px;vertical-align:text-bottom;animation:blink 0.7s step-end infinite}
-@keyframes blink{50%{opacity:0}}
-.msg .audio-btn{margin-top:6px;background:none;border:1px solid rgba(0,0,0,0.12);color:var(--blue);padding:5px 14px;border-radius:16px;font-size:12px;cursor:pointer;transition:all 0.15s}
-.msg .audio-btn:hover{background:rgba(0,0,0,0.04)}
-.msg .time{font-size:10px;opacity:0.4;margin-top:4px;text-align:right}
-.typing{align-self:flex-start;padding:14px 18px;display:none}
-.typing.active{display:flex;gap:4px}
-.typing span{width:7px;height:7px;border-radius:50%;background:#bbb;animation:bounce 1.2s infinite ease-in-out}
-.typing span:nth-child(2){animation-delay:0.15s}.typing span:nth-child(3){animation-delay:0.3s}
-@keyframes bounce{0%,60%,100%{transform:translateY(0)}30%{transform:translateY(-8px)}}
-.input-bar{display:flex;align-items:flex-end;gap:8px;padding:12px 16px;padding-bottom:max(12px,env(safe-area-inset-bottom));border-top:1px solid var(--border);background:rgba(255,255,255,0.45);backdrop-filter:blur(20px);flex-shrink:0}
-.input-bar textarea{flex:1;border:none;outline:none;resize:none;font:inherit;font-size:15px;padding:10px 14px;background:rgba(0,0,0,0.04);border-radius:22px;max-height:100px;line-height:1.3;color:var(--text);transition:background 0.2s}
-.input-bar textarea:focus{background:rgba(0,0,0,0.07)}
-.input-bar textarea::placeholder{color:var(--sub)}
-.btn{width:42px;height:42px;border-radius:50%;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all 0.15s;flex-shrink:0}
-.btn-send{background:var(--blue);color:#fff}.btn-send:hover{background:#0077ed;transform:scale(1.04)}.btn-send:disabled{background:#ccc;transform:none;cursor:default}
-.btn-mic{background:rgba(0,0,0,0.05);color:var(--text)}.btn-mic:hover{background:rgba(0,0,0,0.1)}
-.btn-mic.recording{background:#ff3b30;color:#fff;animation:pulse 1.5s ease-in-out infinite}
-@keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(255,59,48,0.35)}50%{box-shadow:0 0 0 14px rgba(255,59,48,0)}}
-.btn-mic svg{width:20px;height:20px}.btn-send svg{width:18px;height:18px}
-.status{text-align:center;font-size:11px;color:var(--sub);padding:2px 0 4px;font-weight:500;flex-shrink:0}
-.status.recording{color:#ff3b30;animation:blink 0.8s step-end infinite}
-.empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--sub);gap:8px}
-.empty .icon{font-size:52px;opacity:0.25}.empty .text{font-size:14px}
+@media (min-width: 500px) {
+  .app { border-radius: 32px; margin: 16px; height: calc(100vh - 32px); }
+}
+/* ── Header ─────────────────────────────────── */
+.header {
+  padding: 16px 20px 8px;
+  display: flex; align-items: center; gap: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.header .dot { width:10px; height:10px; border-radius:50%; }
+.header .dot.red { background:#ff5f57; }
+.header .dot.yellow { background:#febc2e; }
+.header .dot.green { background:#28c840; }
+.header .title {
+  flex:1; text-align: center; font-size: 15px; font-weight: 600;
+  letter-spacing: -0.2px;
+}
+.header .badge {
+  font-size: 11px; color: var(--sub); background: rgba(0,0,0,0.04);
+  padding: 3px 10px; border-radius: 20px; font-weight: 500;
+}
+/* ── Messages ───────────────────────────────── */
+.messages {
+  flex:1; overflow-y:auto; padding: 20px 16px;
+  display:flex; flex-direction:column; gap:8px;
+  scroll-behavior: smooth;
+}
+.messages::-webkit-scrollbar { width:0; }
+.msg {
+  max-width: 82%; padding: 10px 15px; border-radius: var(--radius-sm);
+  font-size: 15px; line-height: 1.45; word-break: break-word;
+  animation: fadeUp 0.28s ease-out;
+  position: relative;
+}
+@keyframes fadeUp { from{opacity:0;transform:translateY(8px);} to{opacity:1;transform:translateY(0);} }
+.msg.user {
+  align-self: flex-end; background: var(--bubble-user); color: #fff;
+  border-bottom-right-radius: 4px;
+}
+.msg.ai {
+  align-self: flex-start; background: var(--bubble-ai); color: var(--text);
+  border-bottom-left-radius: 4px;
+}
+.msg .speaker-tag {
+  font-size: 10px; opacity:0.65; margin-bottom:2px; font-weight: 500;
+}
+.msg .audio-btn {
+  margin-top:6px; background:none; border:1px solid rgba(255,255,255,0.3);
+  color:inherit; padding:4px 12px; border-radius:14px; font-size:12px;
+  cursor:pointer; transition:all 0.15s; backdrop-filter:blur(10px);
+}
+.msg.ai .audio-btn { border-color:rgba(0,0,0,0.15); color:var(--blue); }
+.msg.user .audio-btn:hover { background:rgba(255,255,255,0.2); }
+.msg.ai .audio-btn:hover { background:rgba(0,0,0,0.05); }
+.msg .time {
+  font-size:10px; opacity:0.45; margin-top:4px; text-align:right;
+}
+/* ── Typing indicator ───────────────────────── */
+.typing { align-self:flex-start; padding:14px 18px; display:none; }
+.typing.active { display:flex; gap:4px; }
+.typing span { width:7px; height:7px; border-radius:50%; background:#bbb;
+  animation: bounce 1.2s infinite ease-in-out; }
+.typing span:nth-child(2){ animation-delay:0.15s; }
+.typing span:nth-child(3){ animation-delay:0.3s; }
+@keyframes bounce { 0%,60%,100%{transform:translateY(0);} 30%{transform:translateY(-8px);} }
+/* ── Input bar ──────────────────────────────── */
+.input-bar {
+  display:flex; align-items:flex-end; gap:8px;
+  padding:12px 16px; padding-bottom:max(12px, env(safe-area-inset-bottom));
+  border-top:1px solid var(--border);
+  background: rgba(255,255,255,0.5);
+  backdrop-filter: blur(20px);
+}
+.input-bar textarea {
+  flex:1; border:none; outline:none; resize:none; font:inherit; font-size:15px;
+  padding:10px 14px; background:rgba(0,0,0,0.04); border-radius:22px;
+  max-height:100px; line-height:1.3; color:var(--text);
+  transition: background 0.2s;
+}
+.input-bar textarea:focus { background:rgba(0,0,0,0.07); }
+.input-bar textarea::placeholder { color:var(--sub); }
+.btn {
+  width:42px; height:42px; border-radius:50%; border:none; cursor:pointer;
+  display:flex; align-items:center; justify-content:center;
+  transition: all 0.15s; flex-shrink:0;
+}
+.btn-send { background:var(--blue); color:#fff; }
+.btn-send:hover { background:#0077ed; transform:scale(1.04); }
+.btn-send:disabled { background:#ccc; transform:none; cursor:default; }
+.btn-mic { background:rgba(0,0,0,0.05); color:var(--text); }
+.btn-mic:hover { background:rgba(0,0,0,0.1); }
+.btn-mic.recording {
+  background:#ff3b30; color:#fff;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+@keyframes pulse { 0%,100%{box-shadow:0 0 0 0 rgba(255,59,48,0.35);}
+  50%{box-shadow:0 0 0 12px rgba(255,59,48,0);}
+}
+.btn-mic svg { width:20px; height:20px; }
+.btn-send svg { width:18px; height:18px; }
+/* ── Status bar ─────────────────────────────── */
+.status {
+  text-align:center; font-size:11px; color:var(--sub); padding:2px 0 4px;
+  font-weight: 500;
+}
+.status.recording { color:#ff3b30; animation: blink 0.8s step-end infinite; }
+@keyframes blink { 50%{ opacity:0; } }
+/* ── Empty state ────────────────────────────── */
+.empty {
+  flex:1; display:flex; flex-direction:column; align-items:center;
+  justify-content:center; color:var(--sub); gap:6px;
+}
+.empty .icon { font-size:48px; opacity:0.3; }
+.empty .text { font-size:14px; }
+
+/* ── Stream effect ────────────────────────────── */
+.msg .streaming-text {
+  display: inline-block;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 </style>
 </head>
 <body>
+
 <div class="app">
   <div class="header">
     <span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span>
     <span class="title">语音助手</span>
     <span class="badge" id="modeBadge">本地</span>
   </div>
+
   <div class="messages" id="messages">
-    <div class="empty" id="emptyState"><div class="icon">🎤</div><div class="text">说点什么吧</div></div>
+    <div class="empty" id="emptyState">
+      <div class="icon">🎤</div>
+      <div class="text">开始对话吧</div>
+    </div>
     <div class="typing" id="typing"><span></span><span></span><span></span></div>
   </div>
-  <div class="status" id="status">&nbsp;</div>
+
+  <div class="status" id="status"></div>
+
   <div class="input-bar">
-    <button class="btn btn-mic" id="micBtn" title="语音"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="1" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></button>
+    <button class="btn btn-mic" id="micBtn" title="语音输入">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <rect x="9" y="1" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/>
+        <line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/>
+      </svg>
+    </button>
     <textarea id="textInput" rows="1" placeholder="输入消息..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendText();}"></textarea>
-    <button class="btn btn-send" id="sendBtn" onclick="sendText()" disabled><svg viewBox="0 0 24 24" fill="currentColor"><path d="M2 21l21-9L2 3v7l15 2-15 2v7z"/></svg></button>
+    <button class="btn btn-send" id="sendBtn" onclick="sendText()" disabled>
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M2 21l21-9L2 3v7l15 2-15 2v7z"/></svg>
+    </button>
   </div>
 </div>
 
 <script>
-const $=id=>document.getElementById(id);
-const msgs=$('messages'),input=$('textInput'),sendBtn=$('sendBtn'),micBtn=$('micBtn');
-const statusEl=$('status'),typing=$('typing'),empty=$('emptyState');
+// ═══════════════════════════════════════════════════════
+//  State
+// ═══════════════════════════════════════════════════════
+const $ = id => document.getElementById(id);
+const msgs = $('messages');
+const input = $('textInput');
+const sendBtn = $('sendBtn');
+const micBtn = $('micBtn');
+const statusEl = $('status');
+const typing = $('typing');
+const empty = $('emptyState');
 
-input.addEventListener('input',()=>{input.style.height='auto';input.style.height=Math.min(input.scrollHeight,100)+'px';sendBtn.disabled=!input.value.trim()});
+let mediaRecorder = null;
+let audioChunks = [];
+let isRecording = false;
+let audioQueue = [];  // audio playback queue
 
-// ═══════════════════════════════════════════════
-//  PCM WAV 录音（16kHz mono int16）
-// ═══════════════════════════════════════════════
-let audioCtx=null,scriptNode=null,pcmChunks=[],isRecording=false;
+// Auto-resize textarea
+input.addEventListener('input', () => {
+  input.style.height = 'auto';
+  input.style.height = Math.min(input.scrollHeight, 100) + 'px';
+  sendBtn.disabled = !input.value.trim();
+});
 
-async function startRecording(){
-  try{
-    if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)({sampleRate:16000});
-    const stream=await navigator.mediaDevices.getUserMedia({audio:{sampleRate:16000,channelCount:1,echoCancellation:true,noiseSuppression:true}});
-    const source=audioCtx.createMediaStreamSource(stream);
-    scriptNode=audioCtx.createScriptProcessor(4096,1,1);
-    pcmChunks=[];
-
-    scriptNode.onaudioprocess=e=>{
-      const inputData=e.inputBuffer.getChannelData(0);
-      pcmChunks.push(new Float32Array(inputData));
-    };
-
-    source.connect(scriptNode);scriptNode.connect(audioCtx.destination);
-    isRecording=true;
-    micBtn.classList.add('recording');
-    statusEl.textContent='● 录音中... 点击停止';
-    statusEl.classList.add('recording');
-    // 清理 stream
-    scriptNode._stream=stream; scriptNode._source=source;
-  }catch(e){statusEl.textContent='麦克风不可用';console.error(e)}
+// ═══════════════════════════════════════════════════════
+//  Health check
+// ═══════════════════════════════════════════════════════
+async function checkHealth() {
+  try {
+    const r = await fetch('/api/health');
+    const d = await r.json();
+    $('modeBadge').textContent = d.mode === 'cloud' ? '云端' : '本地';
+  } catch(e) { /* offline */ }
 }
+checkHealth();
 
-function stopRecording(){
-  if(scriptNode){scriptNode.disconnect();if(scriptNode._source)scriptNode._source.disconnect();if(scriptNode._stream)scriptNode._stream.getTracks().forEach(t=>t.stop());scriptNode=null}
-  isRecording=false;micBtn.classList.remove('recording');statusEl.classList.remove('recording');
-  if(pcmChunks.length===0){statusEl.textContent='';return}
-  const wav=buildWav(pcmChunks,16000);
-  sendVoice(wav);
-}
+// ═══════════════════════════════════════════════════════
+//  Text chat with streaming effect
+// ═══════════════════════════════════════════════════════
+async function sendText() {
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+  input.style.height = 'auto';
+  sendBtn.disabled = true;
 
-micBtn.addEventListener('click',()=>{if(isRecording)stopRecording();else startRecording()});
-
-function buildWav(chunks,sr){
-  const total=chunks.reduce((s,c)=>s+c.length,0);
-  const buf=new ArrayBuffer(44+total*2);
-  const v=new DataView(buf);
-  const w=(off,str)=>{for(let i=0;i<str.length;i++)v.setUint8(off+i,str.charCodeAt(i))};
-  w(0,'RIFF');v.setUint32(4,36+total*2,true);w(8,'WAVE');
-  w(12,'fmt ');v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);
-  v.setUint32(24,sr,true);v.setUint32(28,sr*2,true);v.setUint16(32,2,true);v.setUint16(34,16,true);
-  w(36,'data');v.setUint32(40,total*2,true);
-  let off=44;
-  for(const c of chunks){for(let i=0;i<c.length;i++){const s=Math.max(-1,Math.min(1,c[i]));v.setInt16(off,s<0?s*0x8000:s*0x7FFF,true);off+=2}}
-  return new Blob([buf],{type:'audio/wav'});
-}
-
-// ═══════════════════════════════════════════════
-//  SSE 流式文案
-// ═══════════════════════════════════════════════
-function hideEmpty(){if(empty)empty.style.display='none'}
-
-async function sendText(){
-  const text=input.value.trim();if(!text)return;
-  input.value='';input.style.height='auto';sendBtn.disabled=true;
+  addMessage(text, 'user');
   hideEmpty();
-  addMsg(text,'user');
-
   showTyping();
-  try{
-    const r=await fetch('/api/chat/stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});
-    await streamResponse(r);
-  }catch(e){hideTyping();addMsg('网络错误','ai')}
-  scrollBottom();
-}
 
-async function sendVoice(wavBlob){
-  hideEmpty();
-  const form=new FormData();form.append('audio',wavBlob,'recording.wav');
-  addMsg('🎤 语音消息','user');
-  showTyping();statusEl.textContent='识别中...';
+  try {
+    const response = await fetch('/api/chat/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text })
+    });
 
-  try{
-    const r=await fetch('/api/chat/voice/stream',{method:'POST',body:form});
-    if(r.status===200&&!r.headers.get('content-type')?.includes('text/event-stream')){
-      const d=await r.json();
-      hideTyping();statusEl.textContent='';
-      if(d.error){addMsg(d.error,'ai')}
-      return;
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
     }
-    await streamResponse(r);
-  }catch(e){hideTyping();addMsg('网络错误','ai')}
-  statusEl.textContent='';
-  scrollBottom();
-}
 
-async function streamResponse(r){
-  const reader=r.body.getReader();const decoder=new TextDecoder();
-  let aiBubble=null,textBuf='',audioData=null,audioMime='';
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
 
-  hideTyping();
-  aiBubble=addMsg('','ai'); // 空消息，后续填充
-
-  let tail='';
-  while(true){
-    const{value,done}=await reader.read();if(done)break;
-    tail+=decoder.decode(value,{stream:true});
-    const lines=tail.split('\n');tail=lines.pop()||'';
-    for(const line of lines){
-      if(!line.startsWith('data: '))continue;
-      try{
-        const d=JSON.parse(line.slice(6));
-        if(d.type==='text'){
-          textBuf+=d.data;
-          typewrite(aiBubble,textBuf);
-        }else if(d.type==='audio'){
-          audioData=d.data;audioMime=d.mime;
-          addAudioBtn(aiBubble,()=>playAudio(audioData,audioMime));
-        }else if(d.type==='user_text'){
-          // 更新用户消息
-          const prev=msgs.querySelector('.msg.user:last-of-type');
-          if(prev&&d.data){
-            const label=d.speaker?`🎤 ${d.speaker}: ${d.data}`:`🎤 ${d.data}`;
-            prev.querySelector('.body').textContent=label;
+    // Create AI message container for streaming
+    const aiMsgDiv = addStreamingMessage('ai');
+    const textContainer = aiMsgDiv.querySelector('.body');
+    
+    while (true) {
+      const { done, value } = await reader.read();
+      
+      if (done) break;
+      
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop(); // Keep last incomplete line in buffer
+      
+      for (const line of lines) {
+        if (line.trim()) {
+          try {
+            const data = JSON.parse(line);
+            
+            switch(data.type) {
+              case 'text_chunk':
+                textContainer.textContent += data.content;
+                scrollBottom();
+                if (data.is_final) {
+                  // Add audio button after text is complete
+                  addAudioButton(aiMsgDiv, aiMsgDiv.audioData, aiMsgDiv.audioMime);
+                }
+                break;
+                
+              case 'audio_chunk':
+                // Store audio data for later playback
+                aiMsgDiv.audioData = data.content;
+                aiMsgDiv.audioMime = data.mime;
+                break;
+                
+              case 'error':
+                hideTyping();
+                addMessage(data.content, 'ai');
+                return;
+            }
+          } catch (e) {
+            console.error('Error parsing stream data:', e);
           }
         }
-      }catch(e){}
+      }
     }
+    
+    hideTyping();
+  } catch(e) {
+    hideTyping();
+    addMessage('网络错误，请重试。', 'ai');
+    console.error('Stream error:', e);
   }
-  // 移除光标
-  const cur=aiBubble.querySelector('.cursor');if(cur)cur.remove();
   scrollBottom();
 }
 
-let typewriterTimers={};
-function typewrite(bubble,fullText){
-  const body=bubble.querySelector('.body');if(!body)return;
-  const current=body.textContent||'';
-  if(fullText.length<=current.length)return;
-  const next=fullText[current.length];
-  body.textContent=current+next;
-  // 添加光标
-  let cur=bubble.querySelector('.cursor');
-  if(!cur){cur=document.createElement('span');cur.className='cursor';bubble.appendChild(cur)}
-  const key=bubble;clearTimeout(typewriterTimers[key]);
-  typewriterTimers[key]=setTimeout(()=>typewrite(bubble,fullText),25+Math.random()*15);
+// ═══════════════════════════════════════════════════════
+//  Voice recording with streaming
+// ═══════════════════════════════════════════════════════
+micBtn.addEventListener('click', async () => {
+  if (isRecording) {
+    stopRecording();
+  } else {
+    await startRecording();
+  }
+});
+
+async function startRecording() {
+  try {
+    // Request microphone access with proper audio constraints
+    const stream = await navigator.mediaDevices.getUserMedia({ 
+      audio: { 
+        sampleRate: 16000, 
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
+      } 
+    });
+    mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+    audioChunks = [];
+
+    mediaRecorder.ondataavailable = e => { 
+      if(e.data.size > 0) audioChunks.push(e.data); 
+    };
+    
+    mediaRecorder.onstop = () => {
+      stream.getTracks().forEach(t => t.stop());
+      processVoice();
+    };
+
+    mediaRecorder.start();
+    isRecording = true;
+    micBtn.classList.add('recording');
+    statusEl.textContent = '● 录音中... 点击停止';
+    statusEl.classList.add('recording');
+  } catch(e) {
+    statusEl.textContent = '无法访问麦克风: ' + e.message;
+    console.error('Error accessing microphone:', e);
+  }
 }
 
-// ═══════════════════════════════════════════════
+function stopRecording() {
+  if (mediaRecorder && mediaRecorder.state === 'recording') {
+    mediaRecorder.stop();
+  }
+  isRecording = false;
+  micBtn.classList.remove('recording');
+  statusEl.classList.remove('recording');
+  statusEl.textContent = '处理中...';
+}
+
+async function processVoice() {
+  if (audioChunks.length === 0) {
+    statusEl.textContent = '录音数据为空，请重试';
+    return;
+  }
+  
+  const blob = new Blob(audioChunks, { type: 'audio/webm' });
+  const formData = new FormData();
+  formData.append('audio', blob, 'recording.webm');
+
+  hideEmpty();
+  showTyping();
+
+  try {
+    const response = await fetch('/api/chat/stream', {
+      method: 'POST',
+      body: formData
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      
+      if (done) break;
+      
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop(); // Keep last incomplete line in buffer
+      
+      for (const line of lines) {
+        if (line.trim()) {
+          try {
+            const data = JSON.parse(line);
+            
+            switch(data.type) {
+              case 'user_message':
+                // Add user message with potential speaker info
+                const userText = data.speaker ? `${data.speaker}: ${data.content}` : data.content;
+                addMessage(userText, 'user');
+                break;
+                
+              case 'text_chunk':
+                // If AI message doesn't exist yet, create it
+                if (!window.currentAiMsg) {
+                  window.currentAiMsg = addStreamingMessage('ai');
+                }
+                
+                const textContainer = window.currentAiMsg.querySelector('.body');
+                textContainer.textContent += data.content;
+                scrollBottom();
+                
+                if (data.is_final) {
+                  // Add audio button after text is complete
+                  addAudioButton(window.currentAiMsg, window.currentAiMsg.audioData, window.currentAiMsg.audioMime);
+                  window.currentAiMsg = null; // Reset current AI message reference
+                }
+                break;
+                
+              case 'audio_chunk':
+                // Store audio data for later playback
+                if (window.currentAiMsg) {
+                  window.currentAiMsg.audioData = data.content;
+                  window.currentAiMsg.audioMime = data.mime;
+                }
+                break;
+                
+              case 'error':
+                hideTyping();
+                addMessage(data.content, 'ai');
+                window.currentAiMsg = null;
+                return;
+            }
+          } catch (e) {
+            console.error('Error parsing stream data:', e);
+          }
+        }
+      }
+    }
+    
+    hideTyping();
+    window.currentAiMsg = null;
+  } catch(e) {
+    hideTyping();
+    addMessage('网络错误，请重试。', 'ai');
+    console.error('Voice stream error:', e);
+  }
+  statusEl.textContent = '';
+  scrollBottom();
+}
+
+// ═══════════════════════════════════════════════════════
+//  Audio playback
+// ═══════════════════════════════════════════════════════
+function playAudio(b64, mime) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+  const blob = new Blob([bytes], { type: mime || 'audio/mp3' });
+  const url = URL.createObjectURL(blob);
+  const a = new Audio(url);
+  a.onended = () => URL.revokeObjectURL(url);
+  a.play().catch(e => console.log('播放失败', e));
+}
+
+// ═══════════════════════════════════════════════════════
 //  UI helpers
-// ═══════════════════════════════════════════════
-function addMsg(text,role){
-  const div=document.createElement('div');div.className='msg '+role;
-  const now=new Date();const time=now.getHours().toString().padStart(2,'0')+':'+now.getMinutes().toString().padStart(2,'0');
-  div.innerHTML=`<span class="speaker-tag"></span><span class="body">${esc(text)}</span><div class="time">${time}</div>`;
-  msgs.insertBefore(div,typing);
+// ═══════════════════════════════════════════════════════
+function addMessage(text, role, onClickAudio) {
+  const div = document.createElement('div');
+  div.className = 'msg ' + role;
+
+  const now = new Date();
+  const time = now.getHours().toString().padStart(2,'0') + ':' + now.getMinutes().toString().padStart(2,'0');
+
+  div.innerHTML = `<span class="speaker-tag"></span><span class="body">${escapeHtml(text)}</span>` +
+    (onClickAudio ? `<button class="audio-btn">🔊 播放</button>` : '') +
+    `<div class="time">${time}</div>`;
+
+  msgs.insertBefore(div, typing);
+  scrollBottom();
+
+  if (onClickAudio) {
+    const btn = div.querySelector('.audio-btn');
+    btn.addEventListener('click', () => {
+      btn.textContent = '🔊 播放中...';
+      onClickAudio();
+      setTimeout(() => { btn.textContent = '🔊 播放'; }, 2000);
+    });
+  }
+  
   return div;
 }
 
-function addAudioBtn(bubble,onClick){
-  let btn=bubble.querySelector('.audio-btn');
-  if(!btn){btn=document.createElement('button');btn.className='audio-btn';btn.textContent='🔊 播放';bubble.appendChild(btn)}
-  btn.onclick=()=>{btn.textContent='🔊 播放中...';onClick();setTimeout(()=>btn.textContent='🔊 播放',2000)}
+function addStreamingMessage(role) {
+  const div = document.createElement('div');
+  div.className = 'msg ' + role;
+
+  const now = new Date();
+  const time = now.getHours().toString().padStart(2,'0') + ':' + now.getMinutes().toString().padStart(2,'0');
+
+  div.innerHTML = `<span class="speaker-tag"></span><span class="body"></span><div class="time">${time}</div>`;
+
+  msgs.insertBefore(div, typing);
+  scrollBottom();
+  
+  return div;
 }
 
-function playAudio(b64,mime){
-  const bin=atob(b64);const bytes=new Uint8Array(bin.length);
-  for(let i=0;i<bin.length;i++)bytes[i]=bin.charCodeAt(i);
-  const blob=new Blob([bytes],{type:mime||'audio/mp3'});
-  const url=URL.createObjectURL(blob);
-  const a=new Audio(url);a.onended=()=>URL.revokeObjectURL(url);a.play().catch(e=>console.log(e))
+function addAudioButton(msgDiv, audioData, audioMime) {
+  if (!audioData) return;
+  
+  const audioBtn = document.createElement('button');
+  audioBtn.className = 'audio-btn';
+  audioBtn.textContent = '🔊 播放';
+  audioBtn.addEventListener('click', () => {
+    audioBtn.textContent = '🔊 播放中...';
+    playAudio(audioData, audioMime);
+    setTimeout(() => { audioBtn.textContent = '🔊 播放'; }, 2000);
+  });
+  
+  // Insert before the time element
+  const timeElement = msgDiv.querySelector('.time');
+  msgDiv.insertBefore(audioBtn, timeElement);
 }
 
-function showTyping(){typing.classList.add('active');scrollBottom()}
-function hideTyping(){typing.classList.remove('active')}
-function scrollBottom(){setTimeout(()=>msgs.scrollTop=msgs.scrollHeight,50)}
-function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
-
-// 初始化
-fetch('/api/health').then(r=>r.json()).then(d=>{$('modeBadge').textContent=d.mode==='cloud'?'云端':'本地'}).catch(()=>{});
+function showTyping() { typing.classList.add('active'); scrollBottom(); }
+function hideTyping() { typing.classList.remove('active'); }
+function hideEmpty() { if(empty) empty.style.display='none'; }
+function scrollBottom() { setTimeout(()=>{ msgs.scrollTop = msgs.scrollHeight; }, 50); }
+function escapeHtml(s) { const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
 </script>
 </body>
 </html>
